@@ -147,6 +147,10 @@ button:hover {
   overflow: hidden;
 }
 
+.board.is-source-detail-collapsed {
+  grid-template-columns: 268px minmax(760px, 1fr);
+}
+
 .panel {
   min-height: 0;
   overflow: hidden;
@@ -158,6 +162,10 @@ button:hover {
   display: grid;
   grid-template-columns: 268px 292px;
   background: #eef0ee;
+}
+
+.source-panel.is-detail-collapsed {
+  grid-template-columns: 268px 0;
 }
 
 .source-rail {
@@ -355,7 +363,8 @@ button:hover {
 }
 
 .origin-tab.is-over,
-.hub-tab.is-over {
+.hub-tab.is-over,
+.origin-detail-panel.is-over {
   border-color: #0094ff;
   box-shadow: inset 0 0 0 1px #0094ff;
 }
@@ -396,6 +405,13 @@ button:hover {
   overflow: auto;
   padding: 14px 12px 18px;
   background: #c7e5fa;
+}
+
+.origin-detail-panel.is-collapsed {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
 }
 
 .origin-detail-head {
@@ -815,10 +831,35 @@ button:hover {
 .truck-head,
 .destination-head {
   display: flex;
+  flex-direction: column;
   justify-content: space-between;
   gap: 12px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--strong-line);
+}
+
+.truck-head {
+  flex-direction: row;
+}
+
+.stop-title-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.stop-title-tags span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 1px 8px 0;
+  border: 2px solid var(--strong-line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .pickup-card .destination-head,
@@ -1169,7 +1210,8 @@ button:hover {
 }
 
 .pickup-card .allocation-line,
-.drop-card .allocation-line {
+.drop-card .allocation-line,
+.inbound-card .allocation-line {
   background: #fff;
 }
 
@@ -1283,7 +1325,8 @@ button:hover {
 
 .pickup-card.is-merge-over,
 .pickup-card.is-stop-over,
-.drop-card.is-stop-over {
+.drop-card.is-stop-over,
+.inbound-card.is-stop-over {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
 }
@@ -1329,7 +1372,8 @@ button:hover {
   user-select: none;
 }
 
-.drop-card .allocation-line.is-drop-draggable {
+.drop-card .allocation-line.is-drop-draggable,
+.inbound-card .allocation-line.is-drop-draggable {
   cursor: grab;
   user-select: none;
 }
@@ -1344,7 +1388,8 @@ button:hover {
   box-shadow: 0 0 0 3px rgba(47, 111, 94, .95);
 }
 
-.drop-card .allocation-line.is-drop-draggable.is-selected {
+.drop-card .allocation-line.is-drop-draggable.is-selected,
+.inbound-card .allocation-line.is-drop-draggable.is-selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(47, 111, 94, .95);
 }
@@ -1362,7 +1407,8 @@ button:hover {
   cursor: grabbing;
 }
 
-.drop-card .allocation-line.is-drop-draggable:active {
+.drop-card .allocation-line.is-drop-draggable:active,
+.inbound-card .allocation-line.is-drop-draggable:active {
   cursor: grabbing;
 }
 
