@@ -85,6 +85,7 @@ let state;
 let dragged = null;
 let activeAllocation = null;
 let activeTruckLoad = null;
+let activeQuantityMove = null;
 let selectedTruckItem = null;
 let selectedTruckItems = new Set();
 let selectedSourceItems = new Set();
@@ -627,6 +628,87 @@ function addManyToTruck(truckId, orderIds) {
   render();
 }
 
+function openQuantityMoveModal({ title, items, helper, onConfirm }) {
+  const validItems = items.filter(item => item.max > 0);
+  if (!validItems.length) return;
+  activeTruckLoad = null;
+  activeAllocation = null;
+  activeQuantityMove = { items: validItems, onConfirm };
+  els.modalTitle.textContent = title;
+  const qtyLabel = els.modalQty.closest("label");
+
+  if (validItems.length === 1) {
+    const item = validItems[0];
+    if (qtyLabel) qtyLabel.hidden = false;
+    els.modalOrderSummary.innerHTML = item.summary;
+    els.modalQty.max = item.max;
+    els.modalQty.value = item.max;
+    els.modalQty.disabled = false;
+    els.modalHelper.textContent = helper || `เลือกได้สูงสุด ${item.max.toLocaleString()} แพ็ก`;
+  } else {
+    if (qtyLabel) qtyLabel.hidden = true;
+    els.modalQty.value = 1;
+    els.modalQty.max = 1;
+    els.modalQty.disabled = true;
+    els.modalOrderSummary.innerHTML = validItems.map(item => `
+      <label class="batch-qty-row">
+        <span>${item.summary}</span>
+        <input type="number" min="0" max="${item.max}" step="1" value="${item.max}" data-item-id="${item.id}">
+      </label>
+    `).join("");
+    els.modalHelper.textContent = helper || "ระบุจำนวนที่ต้องการย้ายต่อรายการ หากไม่ต้องการย้ายบางรายการให้ใส่ 0";
+  }
+  els.dialog.showModal();
+}
+
+function closeQuantityModal() {
+  activeQuantityMove = null;
+  const qtyLabel = els.modalQty.closest("label");
+  if (qtyLabel) qtyLabel.hidden = false;
+  els.modalQty.disabled = false;
+}
+
+function orderMoveSummary(order, extra = "") {
+  return `
+    <strong>${order.product}</strong><br>
+    ${order.code}${extra ? `<br>${extra}` : ""}
+  `;
+}
+
+function allocationMoveSummary(order, allocation, extra = "") {
+  return `
+    <strong>${order.product}</strong><br>
+    ${order.code}<br>
+    ${allocation.qty.toLocaleString()} แพ็ก${extra ? `<br>${extra}` : ""}
+  `;
+}
+
+function openSourceToTruckQuantityModal(truckId, orderIds) {
+  const items = [...new Set(orderIds)]
+    .map(orderId => {
+      const order = orderById(orderId);
+      return order ? {
+        id: order.id,
+        orderId: order.id,
+        max: unassignedQty(order),
+        summary: orderMoveSummary(order, `ลูกค้า: ${order.customer}<br>ต้นทาง: ${order.origin}`)
+      } : null;
+    })
+    .filter(Boolean);
+  openQuantityMoveModal({
+    title: "นำสินค้าขึ้นรถ",
+    items,
+    onConfirm: qtyById => {
+      items.forEach(item => {
+        const qty = qtyById.get(item.id) || 0;
+        if (qty > 0) addToTruck(truckId, item.orderId, qty, { skipRender: true });
+      });
+      selectedSourceItems.clear();
+      render();
+    }
+  });
+}
+
 function loadHubOutboundToTruck(allocationIds, targetTruckId) {
   const truck = truckById(targetTruckId);
   const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
@@ -636,12 +718,6 @@ function loadHubOutboundToTruck(allocationIds, targetTruckId) {
     const found = allocationById(allocationId);
     const transferName = found?.allocation.hubName || found?.allocation.transferLocationName;
     if (!found || found.allocation.status !== "STAGED_IN_HUB" || !transferName) return;
-    const sourceTruck = truckById(found.allocation.truckId);
-    if (sourceTruck) {
-      removeAllocationFromStops(sourceTruck, allocationId);
-      compactRouteStops(sourceTruck);
-    }
-
     found.allocation.status = "MOVED_FROM_HUB";
     const qty = found.allocation.qty;
     if (!truck.itemIds.includes(found.order.id)) truck.itemIds.push(found.order.id);
@@ -668,6 +744,69 @@ function loadHubOutboundToTruck(allocationIds, targetTruckId) {
   clearHubOutboundSelection();
   render();
   return true;
+}
+
+function loadHubOutboundQuantitiesToTruck(allocationIds, targetTruckId, qtyById) {
+  const truck = truckById(targetTruckId);
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  if (!truck || !ids.length) return false;
+
+  ids.forEach(allocationId => {
+    const found = allocationById(allocationId);
+    const transferName = found?.allocation.hubName || found?.allocation.transferLocationName;
+    const qty = Math.min(qtyById.get(allocationId) || 0, found?.allocation.qty || 0);
+    if (!found || found.allocation.status !== "STAGED_IN_HUB" || !transferName || qty <= 0) return;
+    const isFullMove = qty >= found.allocation.qty;
+
+    if (isFullMove) {
+      found.allocation.status = "MOVED_FROM_HUB";
+    } else {
+      found.allocation.qty -= qty;
+    }
+
+    if (!truck.itemIds.includes(found.order.id)) truck.itemIds.push(found.order.id);
+    ensureOriginSequence(truck, transferName);
+    syncTruckOrigins(truck);
+
+    const outboundAllocation = {
+      id: `A-${state.nextAllocation++}`,
+      truckId: truck.id,
+      destination: found.order.customer,
+      status: "ASSIGNED",
+      qty,
+      autoRoute: true,
+      sourceTransferType: found.allocation.hubId ? "HUB" : found.allocation.transferLocationType,
+      sourceTransferName: transferName,
+      sourceHubId: found.allocation.hubId || null,
+      sourceHubName: found.allocation.hubName || null,
+      timestamp: Date.now()
+    };
+    found.order.allocations.push(outboundAllocation);
+    ensureHubOutboundRouteStops(truck, outboundAllocation, found.order, transferName);
+  });
+
+  clearHubOutboundSelection();
+  render();
+  return true;
+}
+
+function openHubOutboundQuantityModal(allocationIds, targetTruckId) {
+  const items = [...new Set(allocationIds)]
+    .map(allocationId => {
+      const found = allocationById(allocationId);
+      const transferName = found?.allocation.hubName || found?.allocation.transferLocationName;
+      return found && found.allocation.status === "STAGED_IN_HUB" && transferName ? {
+        id: allocationId,
+        max: found.allocation.qty,
+        summary: allocationMoveSummary(found.order, found.allocation, `จาก: ${transferName}<br>ไป: ${found.order.customer}`)
+      } : null;
+    })
+    .filter(Boolean);
+  openQuantityMoveModal({
+    title: "นำสินค้า outbound ขึ้นรถ",
+    items,
+    onConfirm: qtyById => loadHubOutboundQuantitiesToTruck(items.map(item => item.id), targetTruckId, qtyById)
+  });
 }
 
 function truckSelectionKey(truckId, orderId) {
@@ -737,6 +876,7 @@ function allocateManyToDestination(truckId, destination, orderIds) {
 function openTruckLoadModal(truckId, orderId) {
   const order = orderById(orderId);
   const max = unassignedQty(order);
+  closeQuantityModal();
   activeTruckLoad = { truckId, orderId };
   activeAllocation = null;
   els.modalTitle.textContent = "นำสินค้าขึ้นรถ";
@@ -988,6 +1128,77 @@ function sourceHeader(label, orderIds, className = "") {
   checkbox.disabled = state.disabled;
   checkbox.addEventListener("change", event => {
     setSourceSelection(orderIds, event.target.checked);
+  });
+  return header;
+}
+
+function routeSelectionStore(context) {
+  if (context === "route-pickup") return selectedRoutePickups;
+  if (context === "route-drop") return selectedRouteDrops;
+  if (context === "hub-outbound") return selectedHubOutboundItems;
+  return null;
+}
+
+function routeSelectionKeyFor(allocation, context, stopId = null) {
+  if (context === "route-pickup") return routePickupKey(allocation.id, stopId);
+  if (context === "route-drop") return routeDropKey(allocation.id, stopId);
+  return allocation.id;
+}
+
+function routeCustomerHeader(label, allocations, context, stopId = null) {
+  const header = document.createElement("label");
+  header.className = "source-select customer-select route-customer-select";
+  header.innerHTML = `
+    <input type="checkbox">
+    <span>${label}</span>
+  `;
+  const checkbox = header.querySelector("input");
+  const selectable = allocations.filter(allocation => allocation.status !== "MOVED_FROM_HUB");
+  const store = routeSelectionStore(context);
+  const keys = selectable.map(allocation => routeSelectionKeyFor(allocation, context, stopId));
+  const selectedCount = store ? keys.filter(key => store.has(key)).length : 0;
+  checkbox.checked = keys.length > 0 && selectedCount === keys.length;
+  checkbox.indeterminate = selectedCount > 0 && selectedCount < keys.length;
+  checkbox.disabled = !store || keys.length === 0;
+  checkbox.addEventListener("change", event => {
+    if (!store) return;
+    if (event.target.checked) clearActionSelections(context);
+    keys.forEach(key => {
+      if (event.target.checked) store.add(key);
+      else store.delete(key);
+    });
+    render();
+  });
+  return header;
+}
+
+function truckCustomerHeader(truck, label, orders) {
+  const header = document.createElement("label");
+  header.className = "source-select customer-select route-customer-select truck-customer-select";
+  header.innerHTML = `
+    <input type="checkbox">
+    <span>${label}</span>
+  `;
+  const selectable = orders.filter(order => qtyInTruck(order, truck.id) > 0);
+  const keys = selectable.map(order => truckSelectionKey(truck.id, order.id));
+  const checkbox = header.querySelector("input");
+  const selectedCount = keys.filter(key => selectedTruckItems.has(key)).length;
+  checkbox.checked = keys.length > 0 && selectedCount === keys.length;
+  checkbox.indeterminate = selectedCount > 0 && selectedCount < keys.length;
+  checkbox.disabled = keys.length === 0;
+  checkbox.addEventListener("change", event => {
+    if (event.target.checked) clearActionSelections("truck");
+    keys.forEach(key => {
+      if (event.target.checked) selectedTruckItems.add(key);
+      else selectedTruckItems.delete(key);
+    });
+    selectedTruckItem = selectedTruckItems.size === 1
+      ? (() => {
+          const [truckId, orderId] = [...selectedTruckItems][0].split(":");
+          return { truckId, orderId };
+        })()
+      : null;
+    render();
   });
   return header;
 }
@@ -1431,13 +1642,11 @@ function renderHubDetail(hub) {
   const stack = els.originDetail.querySelector(".hub-transfer-stack");
   const groups = groupAllocationsByCustomer(inbound);
   Object.entries(groups).forEach(([customer, allocations]) => {
-    const title = document.createElement("h4");
-    title.className = "route-customer-title";
-    title.textContent = customer;
-    stack.append(title);
+    stack.append(routeCustomerHeader(customer, allocations, "hub-outbound"));
     allocations.forEach(allocation => stack.append(allocationLine(allocation, {
       readonly: true,
       hubOutbound: allocation.status === "STAGED_IN_HUB",
+      returnTransfer: allocation.status === "STAGED_IN_HUB",
       muted: allocation.status === "MOVED_FROM_HUB"
     })));
   });
@@ -1535,13 +1744,11 @@ function renderOriginDetail(orders) {
     const outboundStack = document.createElement("div");
     outboundStack.className = "to-stack";
     Object.entries(groupAllocationsByCustomer(transferAllocations)).forEach(([customer, allocations]) => {
-      const title = document.createElement("h4");
-      title.className = "route-customer-title";
-      title.textContent = customer;
-      outboundStack.append(title);
+      outboundStack.append(routeCustomerHeader(customer, allocations, "hub-outbound"));
       allocations.forEach(allocation => outboundStack.append(allocationLine(allocation, {
         readonly: true,
         hubOutbound: allocation.status === "STAGED_IN_HUB",
+        returnTransfer: allocation.status === "STAGED_IN_HUB",
         muted: allocation.status === "MOVED_FROM_HUB"
       })));
     });
@@ -1697,10 +1904,7 @@ function renderTruckItems(truck, stack) {
 
     const customerGroups = groupBy(orders, "customer");
     Object.entries(customerGroups).forEach(([customer, customerOrders]) => {
-      const customerTitle = document.createElement("h4");
-      customerTitle.textContent = customer;
-      customerTitle.className = "truck-customer-title";
-      stack.append(customerTitle);
+      stack.append(truckCustomerHeader(truck, customer, customerOrders));
       customerOrders.forEach(order => {
         const qty = qtyInTruck(order, truck.id);
         stack.append(toCard(order, qty, {
@@ -1871,7 +2075,22 @@ function addHubDropHandlers(zone, hubId) {
     if (!dragged?.dropToHub) return;
     event.preventDefault();
     zone.classList.remove("is-over");
-    moveDropAllocationsToHub(hubId, dragged.allocationIds || [dragged.allocationId], dragged.fromRouteStopId);
+    const hub = state.hubs.find(item => item.id === hubId);
+    if (!hub) return;
+    openDropTransferQuantityModal({
+      title: `ลงสินค้าเข้า ${hub.name}`,
+      allocationIds: dragged.allocationIds || [dragged.allocationId],
+      fromStopId: dragged.fromRouteStopId,
+      transferLocation: hub.name,
+      transferFields: {
+        destination: `HUB:${hub.name}`,
+        status: "STAGED_IN_HUB",
+        hubId: hub.id,
+        hubName: hub.name,
+        transferLocationType: null,
+        transferLocationName: null
+      }
+    });
   });
 }
 
@@ -1887,7 +2106,20 @@ function addOriginTransferDropHandlers(tab, origin) {
     event.preventDefault();
     event.stopPropagation();
     tab.classList.remove("is-over");
-    moveDropAllocationsToOrigin(origin, dragged.allocationIds || [dragged.allocationId], dragged.fromRouteStopId);
+    openDropTransferQuantityModal({
+      title: `ลงสินค้าเข้า ${origin}`,
+      allocationIds: dragged.allocationIds || [dragged.allocationId],
+      fromStopId: dragged.fromRouteStopId,
+      transferLocation: origin,
+      transferFields: {
+        destination: `ORIGIN:${origin}`,
+        status: "STAGED_IN_HUB",
+        transferLocationType: "ORIGIN",
+        transferLocationName: origin,
+        hubId: null,
+        hubName: null
+      }
+    });
   });
 }
 
@@ -1952,6 +2184,194 @@ function moveDropAllocationsToOrigin(origin, allocationIds, fromStopId) {
   return true;
 }
 
+function splitDropAllocationForTransfer(found, qty, transferFields) {
+  const { order, allocation } = found;
+  const isFullMove = qty >= allocation.qty;
+  if (isFullMove) {
+    Object.assign(allocation, transferFields);
+    return allocation.id;
+  }
+
+  allocation.qty -= qty;
+  const transferAllocation = {
+    id: `A-${state.nextAllocation++}`,
+    truckId: allocation.truckId,
+    destination: transferFields.destination,
+    status: transferFields.status,
+    qty,
+    autoRoute: allocation.autoRoute,
+    timestamp: Date.now(),
+    ...transferFields
+  };
+  order.allocations.push(transferAllocation);
+  const truck = truckById(allocation.truckId);
+  (truck?.routeStops || []).forEach(stop => {
+    if ((stop.type === "PICK" || stop.type === "OUTBOUND") && stop.allocationIds.includes(allocation.id)) {
+      addAllocationToStop(stop, transferAllocation.id);
+    }
+  });
+  return transferAllocation.id;
+}
+
+function moveDropAllocationQuantitiesToTransfer({ allocationIds, qtyById, fromStopId, transferLocation, transferFields }) {
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  const foundItems = ids.map(allocationById).filter(Boolean);
+  if (!transferLocation || !ids.length || !foundItems.length) return false;
+  const truck = truckById(foundItems[0].allocation.truckId);
+  const fromStop = stopById(truck, fromStopId);
+  if (!truck || !fromStop || fromStop.type !== "DROP") return false;
+
+  const fromIndex = truck.routeStops.findIndex(stop => stop.id === fromStopId);
+  let inbound = truck.routeStops.find(stop => stop.type === "INBOUND" && stop.location === transferLocation);
+  if (!inbound) {
+    inbound = createRouteStop("INBOUND", transferLocation);
+    truck.routeStops.splice(fromIndex + 1, 0, inbound);
+  }
+
+  foundItems.forEach(found => {
+    const qty = Math.min(qtyById.get(found.allocation.id) || 0, found.allocation.qty);
+    if (qty <= 0) return;
+    const isFullMove = qty >= found.allocation.qty;
+    const transferAllocationId = splitDropAllocationForTransfer(found, qty, transferFields);
+    if (isFullMove) {
+      fromStop.allocationIds = fromStop.allocationIds.filter(id => id !== found.allocation.id);
+    }
+    addAllocationToStop(inbound, transferAllocationId);
+  });
+
+  compactRouteStops(truck);
+  clearRouteDropSelection();
+  render();
+  return true;
+}
+
+function openDropTransferQuantityModal({ title, allocationIds, fromStopId, transferLocation, transferFields }) {
+  const items = [...new Set(allocationIds)]
+    .map(allocationId => {
+      const found = allocationById(allocationId);
+      return found ? {
+        id: allocationId,
+        max: found.allocation.qty,
+        summary: allocationMoveSummary(found.order, found.allocation, `ไป: ${transferLocation}`)
+      } : null;
+    })
+    .filter(Boolean);
+  openQuantityMoveModal({
+    title,
+    items,
+    onConfirm: qtyById => moveDropAllocationQuantitiesToTransfer({
+      allocationIds: items.map(item => item.id),
+      qtyById,
+      fromStopId,
+      transferLocation,
+      transferFields
+    })
+  });
+}
+
+function removeAllocationFromInboundStops(truck, allocationId) {
+  (truck.routeStops || []).forEach(stop => {
+    if (stop.type === "INBOUND") {
+      stop.allocationIds = stop.allocationIds.filter(id => id !== allocationId);
+    }
+  });
+}
+
+function addReturnedTransferToRoute(truck, sourceAllocationId, returnedAllocationId, customer) {
+  truck.routeStops ||= [];
+  (truck.routeStops || []).forEach(stop => {
+    if ((stop.type === "PICK" || stop.type === "OUTBOUND") && stop.allocationIds.includes(sourceAllocationId)) {
+      addAllocationToStop(stop, returnedAllocationId);
+    }
+  });
+
+  let drop = truck.routeStops.find(stop => stop.type === "DROP" && stop.location === customer);
+  if (!drop) {
+    drop = createRouteStop("DROP", customer);
+    const sourceIndex = truck.routeStops.findIndex(stop =>
+      (stop.type === "PICK" || stop.type === "OUTBOUND" || stop.type === "INBOUND") &&
+      stop.allocationIds.includes(sourceAllocationId)
+    );
+    truck.routeStops.splice(sourceIndex >= 0 ? sourceIndex + 1 : truck.routeStops.length, 0, drop);
+  }
+  addAllocationToStop(drop, returnedAllocationId);
+}
+
+function resetTransferFields(allocation, customer) {
+  allocation.destination = customer;
+  allocation.status = "ASSIGNED";
+  allocation.hubId = null;
+  allocation.hubName = null;
+  allocation.transferLocationType = null;
+  allocation.transferLocationName = null;
+  allocation.transferLocationId = null;
+}
+
+function returnTransferAllocationQuantities(allocationIds, qtyById) {
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  if (!ids.length) return false;
+
+  ids.forEach(allocationId => {
+    const found = allocationById(allocationId);
+    const qty = Math.min(qtyById.get(allocationId) || 0, found?.allocation.qty || 0);
+    if (!found || found.allocation.status !== "STAGED_IN_HUB" || qty <= 0) return;
+
+    const truck = truckById(found.allocation.truckId);
+    if (!truck) return;
+    const isFullMove = qty >= found.allocation.qty;
+
+    if (isFullMove) {
+      removeAllocationFromInboundStops(truck, allocationId);
+      resetTransferFields(found.allocation, found.order.customer);
+      addReturnedTransferToRoute(truck, allocationId, allocationId, found.order.customer);
+    } else {
+      found.allocation.qty -= qty;
+      const returnedAllocation = {
+        ...found.allocation,
+        id: `A-${state.nextAllocation++}`,
+        destination: found.order.customer,
+        status: "ASSIGNED",
+        qty,
+        hubId: null,
+        hubName: null,
+        transferLocationType: null,
+        transferLocationName: null,
+        transferLocationId: null,
+        timestamp: Date.now()
+      };
+      found.order.allocations.push(returnedAllocation);
+      addReturnedTransferToRoute(truck, allocationId, returnedAllocation.id, found.order.customer);
+    }
+
+    compactRouteStops(truck);
+    syncTruckOrigins(truck);
+  });
+
+  clearHubOutboundSelection();
+  render();
+  return true;
+}
+
+function openReturnTransferQuantityModal(allocationIds) {
+  const items = [...new Set(allocationIds)]
+    .map(allocationId => {
+      const found = allocationById(allocationId);
+      const transferName = found?.allocation.hubName || found?.allocation.transferLocationName;
+      return found && found.allocation.status === "STAGED_IN_HUB" ? {
+        id: allocationId,
+        max: found.allocation.qty,
+        summary: allocationMoveSummary(found.order, found.allocation, `จาก: ${transferName || "Transfer"}<br>กลับเข้ารถเดิม`)
+      } : null;
+    })
+    .filter(Boolean);
+  openQuantityMoveModal({
+    title: "คืนสินค้ากลับรถเดิม",
+    helper: "ระบุจำนวนที่ต้องการคืนจากจุด transfer กลับไปแผนส่งเดิม",
+    items,
+    onConfirm: qtyById => returnTransferAllocationQuantities(items.map(item => item.id), qtyById)
+  });
+}
+
 
 function routeStopNode(truck, stop) {
   const allocations = stop.allocationIds
@@ -1985,10 +2405,16 @@ function routeStopNode(truck, stop) {
     ? groupAllocationsByCustomer(allocations)
     : groupAllocationsByCustomer(allocations);
   Object.entries(grouped).forEach(([customer, customerAllocations]) => {
-    const title = document.createElement("h4");
-    title.className = "route-customer-title";
-    title.textContent = customer;
-    items.append(title);
+    if (stop.type === "PICK") {
+      items.append(routeCustomerHeader(customer, customerAllocations, "route-pickup", stop.id));
+    } else if (stop.type === "DROP") {
+      items.append(routeCustomerHeader(customer, customerAllocations, "route-drop", stop.id));
+    } else {
+      const title = document.createElement("h4");
+      title.className = "route-customer-title";
+      title.textContent = customer;
+      items.append(title);
+    }
     customerAllocations.forEach(routeAllocation => {
       items.append(allocationLine(routeAllocation, {
         readonly: stop.type !== "PICK",
@@ -2214,9 +2640,6 @@ function allocationLine(allocation, options = {}) {
       if (!selectedRoutePickups.has(selectionKey)) {
         clearActionSelections("route-pickup");
         selectedRoutePickups.add(selectionKey);
-      } else {
-        clearActionSelections("route-pickup");
-        selectedRoutePickups.add(selectionKey);
       }
       const allocationIds = selectedPickupIdsForStop(options.pickupStopId, allocation.id);
       dragged = {
@@ -2257,9 +2680,6 @@ function allocationLine(allocation, options = {}) {
       if (!selectedRouteDrops.has(dropSelectionKey)) {
         clearActionSelections("route-drop");
         selectedRouteDrops.add(dropSelectionKey);
-      } else {
-        clearActionSelections("route-drop");
-        selectedRouteDrops.add(dropSelectionKey);
       }
       const allocationIds = selectedDropIdsForStop(options.dropStopId, allocation.id);
       dragged = {
@@ -2294,9 +2714,6 @@ function allocationLine(allocation, options = {}) {
     });
     line.addEventListener("dragstart", event => {
       if (!selectedHubOutboundItems.has(allocation.id)) {
-        clearActionSelections("hub-outbound");
-        selectedHubOutboundItems.add(allocation.id);
-      } else {
         clearActionSelections("hub-outbound");
         selectedHubOutboundItems.add(allocation.id);
       }
@@ -2338,20 +2755,31 @@ function allocationLine(allocation, options = {}) {
       dragged = null;
     });
   }
+  const showReturnTransfer = options.returnTransfer && !isMovedFromHub;
+  const showLoad = !options.readonly && !options.hideActions && isHubDestination(allocation.destination) && !isMovedFromHub;
+  const showUndo = !options.readonly && !options.hideActions && !isMovedFromHub;
+  const showActions = showReturnTransfer || showLoad || showUndo;
   line.innerHTML = `
     <div>
       <strong>${allocation.order.product}</strong>
       <span>${allocation.order.code}</span>
       <b>${allocation.qty.toLocaleString()} แพ็ก</b>
     </div>
-    ${options.readonly || options.hideActions ? "" : `
+    ${showActions ? `
       <div class="allocation-actions">
-        ${isHubDestination(allocation.destination) && !isMovedFromHub ? '<button type="button" data-action="load" aria-label="โหลดขึ้นรถ">→</button>' : ""}
-        ${!isMovedFromHub ? '<button type="button" data-action="undo" aria-label="Undo">↩</button>' : ""}
+        ${showReturnTransfer ? '<button type="button" data-action="return-transfer" aria-label="คืนสินค้ากลับรถเดิม">×</button>' : ""}
+        ${showLoad ? '<button type="button" data-action="load" aria-label="โหลดขึ้นรถ">→</button>' : ""}
+        ${showUndo ? '<button type="button" data-action="undo" aria-label="Undo">↩</button>' : ""}
       </div>
-    `}
+    ` : ""}
   `;
   line.querySelector('[data-action="undo"]')?.addEventListener("click", () => undoAllocation(allocation.id));
+  line.querySelector('[data-action="return-transfer"]')?.addEventListener("click", event => {
+    event.stopPropagation();
+    const allocationIds = selectedHubOutboundIds(allocation.id)
+      .filter(id => allocationById(id)?.allocation.status === "STAGED_IN_HUB");
+    openReturnTransferQuantityModal(allocationIds);
+  });
   line.querySelector('[data-action="load"]')?.addEventListener("click", () => {
     const allocationIds = allocationSelectionIdsForDestination(allocation.destination, allocation.id);
     if (allocationIds.length > 1) loadManyFromHubToTruck(allocationIds);
@@ -2593,15 +3021,20 @@ function toCard(order, qty, options = {}) {
     });
     node.addEventListener("dragstart", event => {
       if (options.sourceSelectable) {
-        clearActionSelections("source");
-        selectedSourceItems.add(order.id);
-        const selectedIds = selectedSourceItems.has(order.id) ? [...selectedSourceItems] : [order.id];
+        if (!selectedSourceItems.has(order.id)) {
+          clearActionSelections("source");
+          selectedSourceItems.add(order.id);
+        }
+        const selectedIds = [...selectedSourceItems];
         dragged = { orderIds: selectedIds, fromTruckId: null };
         event.dataTransfer.setData("text/plain", selectedIds.join(","));
       } else {
         if (options.truckId) {
-          clearActionSelections("truck");
-          selectedTruckItems.add(truckSelectionKey(options.truckId, order.id));
+          const key = truckSelectionKey(options.truckId, order.id);
+          if (!selectedTruckItems.has(key)) {
+            clearActionSelections("truck");
+            selectedTruckItems.add(key);
+          }
         }
         const selectedIds = options.truckId ? selectedOrderIdsForTruck(options.truckId, order.id) : [order.id];
         dragged = selectedIds.length > 1
@@ -2649,7 +3082,7 @@ function addDropHandlers(card, truckId) {
     card.classList.remove("is-over");
     if (!dragged || dragged.fromTruckId === truckId) return;
     if (dragged.fromHubOutbound) {
-      loadHubOutboundToTruck(dragged.allocationIds || [dragged.allocationId], truckId);
+      openHubOutboundQuantityModal(dragged.allocationIds || [dragged.allocationId], truckId);
       return;
     }
     if (dragged.fromHub) {
@@ -2658,7 +3091,7 @@ function addDropHandlers(card, truckId) {
       return;
     }
     if (dragged.orderIds?.length) {
-      addManyToTruck(truckId, dragged.orderIds);
+      openSourceToTruckQuantityModal(truckId, dragged.orderIds);
       return;
     }
     if (!dragged.orderId) return;
@@ -2666,7 +3099,7 @@ function addDropHandlers(card, truckId) {
     const available = dragged.fromTruckId ? qtyInTruck(order, dragged.fromTruckId) : unassignedQty(order);
     if (available <= 0) return;
     if (dragged.fromTruckId) moveBetweenTrucks(dragged.fromTruckId, truckId, dragged.orderId, available);
-    else addToTruck(truckId, dragged.orderId, available);
+    else openSourceToTruckQuantityModal(truckId, [dragged.orderId]);
   });
 }
 
@@ -2752,6 +3185,7 @@ function openAllocationModal(truckId, destination, orderId) {
   const order = orderById(orderId);
   const max = qtyInTruck(order, truckId);
 
+  closeQuantityModal();
   activeTruckLoad = null;
   activeAllocation = { truckId, destination, orderId };
   els.modalTitle.textContent = `ส่งไปยัง ${destination}`;
@@ -2861,6 +3295,39 @@ els.zoomInButton.addEventListener("click", () => {
 });
 
 function confirmModal() {
+  if (activeQuantityMove) {
+    const qtyById = new Map();
+    if (activeQuantityMove.items.length === 1) {
+      const item = activeQuantityMove.items[0];
+      const qty = Number(els.modalQty.value);
+      if (qty <= 0 || qty > item.max) {
+        els.modalHelper.innerHTML = `<span class="warning">จำนวนต้องอยู่ระหว่าง 1 ถึง ${item.max.toLocaleString()}</span>`;
+        return;
+      }
+      qtyById.set(item.id, qty);
+    } else {
+      let hasQty = false;
+      for (const input of els.modalOrderSummary.querySelectorAll(".batch-qty-row input")) {
+        const item = activeQuantityMove.items.find(row => row.id === input.dataset.itemId);
+        const qty = Number(input.value);
+        if (!item || qty < 0 || qty > item.max) {
+          els.modalHelper.innerHTML = `<span class="warning">จำนวนต้องอยู่ระหว่าง 0 ถึงจำนวนสูงสุดของแต่ละรายการ</span>`;
+          return;
+        }
+        if (qty > 0) hasQty = true;
+        qtyById.set(item.id, qty);
+      }
+      if (!hasQty) {
+        els.modalHelper.innerHTML = `<span class="warning">กรุณาระบุจำนวนอย่างน้อย 1 รายการ</span>`;
+        return;
+      }
+    }
+    activeQuantityMove.onConfirm(qtyById);
+    closeQuantityModal();
+    els.dialog.close();
+    return;
+  }
+
   const orderId = activeTruckLoad?.orderId || activeAllocation?.orderId;
   const qty = Number(els.modalQty.value);
   const max = Number(els.modalQty.max);
@@ -2887,8 +3354,14 @@ els.allocationForm.addEventListener("submit", event => {
 
 els.confirmModalButton.addEventListener("click", confirmModal);
 
-els.closeModalButton.addEventListener("click", () => els.dialog.close());
-els.cancelModalButton.addEventListener("click", () => els.dialog.close());
+els.closeModalButton.addEventListener("click", () => {
+  closeQuantityModal();
+  els.dialog.close();
+});
+els.cancelModalButton.addEventListener("click", () => {
+  closeQuantityModal();
+  els.dialog.close();
+});
 
 state = createInitialState();
 render();

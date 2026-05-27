@@ -1179,6 +1179,14 @@ button:hover {
   font-size: 12px;
 }
 
+.route-customer-select {
+  margin: 8px 0 6px;
+}
+
+.truck-customer-select {
+  margin-top: 4px;
+}
+
 .destination-node:not(:first-child)::before {
   display: none;
 }
@@ -1643,6 +1651,25 @@ button:hover {
   background: var(--surface-muted);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.batch-qty-row {
+  display: grid;
+  grid-template-columns: 1fr 96px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+}
+
+.batch-qty-row + .batch-qty-row {
+  margin-top: 8px;
+}
+
+.batch-qty-row span {
+  min-width: 0;
 }
 
 .modal-body select,
