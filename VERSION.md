@@ -1,6 +1,6 @@
 # Plus Transport Crossdock POC
 
-Current milestone: `v0.3.0-poc`
+Current milestone: `v0.3.1-poc`
 
 ## Scope
 
@@ -11,6 +11,9 @@ Current milestone: `v0.3.0-poc`
 - HUB staging and trucks departing from HUB
 - Same-truck continuation after HUB
 - Product route highlight from origin through the flow
+- Route-based PICK/DROP planning with split pickup stops
+- Transfer inbound/outbound through HUB and origin locations
+- Pending/complete tracking for delivery and transfer points
 
 ## Status
 
