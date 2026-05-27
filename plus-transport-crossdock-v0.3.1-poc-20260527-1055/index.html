@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Plus Transport Crossdock POC</title>
+    <link rel="stylesheet" href="styles.css?v=v0.3.1-poc">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PLUS TRANSPORT</p>
+        <h1>Transport Planning Board</h1>
+        <span class="version-badge">v0.3.1-poc</span>
+      </div>
+      <div class="summary-strip" id="summaryStrip"></div>
+    </header>
+
+    <main class="board">
+      <section class="panel source-panel">
+        <div class="source-rail">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Planning Board</p>
+              <h2>ข้อมูลแผน</h2>
+            </div>
+            <span class="hint">ลากสินค้าไปวางในรถ</span>
+          </div>
+          <section class="to-selection-panel">
+            <div class="sidebar-section-head">
+              <div>
+                <p class="eyebrow">T/O</p>
+                <h3>รายการที่เลือกมาจัดแผน</h3>
+              </div>
+              <div class="sidebar-actions">
+                <button type="button" class="link-button" id="toggleTOPanelButton">ย่อ</button>
+                <button type="button" class="link-button" id="addTOButton">+ เพิ่ม T/O</button>
+              </div>
+            </div>
+            <div id="selectedTOList" class="selected-to-list"></div>
+          </section>
+          <div class="origin-section-head">
+            <div>
+              <p class="eyebrow">Locations</p>
+              <h3>สถานที่</h3>
+            </div>
+          </div>
+          <div id="originList" class="origin-list"></div>
+          <section class="hub-panel">
+            <div class="sidebar-section-head">
+              <div>
+                <p class="eyebrow">HUB</p>
+                <h3>สถานที่กระจายสินค้า</h3>
+              </div>
+              <button type="button" class="link-button" id="addHubButton">+ เพิ่ม</button>
+            </div>
+            <div id="hubList" class="hub-list"></div>
+          </section>
+          <section class="delivery-panel">
+            <div class="sidebar-section-head">
+              <div>
+                <p class="eyebrow">Delivery</p>
+                <h3>สถานที่จัดส่ง</h3>
+              </div>
+            </div>
+            <div id="deliveryList" class="delivery-list"></div>
+          </section>
+        </div>
+        <aside class="origin-detail-panel" id="originDetail"></aside>
+      </section>
+
+      <section class="planning-stage">
+        <div class="stage-head">
+          <div>
+            <p class="eyebrow">Planning Flow</p>
+            <h2>จัดรถและเลือกปลายทาง</h2>
+          </div>
+          <div class="stage-actions">
+            <button type="button" class="ghost" id="zoomOutButton">-</button>
+            <span class="zoom-label" id="zoomLabel">100%</span>
+            <button type="button" class="ghost" id="zoomInButton">+</button>
+            <button type="button" class="ghost" id="resetButton">Reset</button>
+          </div>
+        </div>
+        <div class="canvas-viewport">
+          <div id="truckCanvas" class="truck-canvas"></div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="allocationDialog" class="modal">
+      <form method="dialog" id="allocationForm">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Allocation</p>
+            <h3 id="modalTitle">ส่งไปยัง</h3>
+          </div>
+          <button type="button" class="icon-button" id="closeModalButton" aria-label="ปิด">x</button>
+        </div>
+        <div class="modal-body">
+          <div class="selected-order" id="modalOrderSummary"></div>
+          <label>
+            จำนวนแพ็ก
+            <input id="modalQty" type="number" min="1" step="1">
+          </label>
+          <p id="modalHelper" class="modal-helper"></p>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="ghost" id="cancelModalButton">ยกเลิก</button>
+          <button type="button" id="confirmModalButton">ยืนยัน</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="toPickerDialog" class="to-picker-modal">
+      <form method="dialog">
+        <div class="to-picker-head">
+          <h3>เลือกใบ T/O</h3>
+          <div class="to-picker-search">
+            <button type="button" class="mock-to-button" id="mockTOButton">+ Mock T/O หลายต้นทาง</button>
+            <input id="toPickerSearch" type="search" placeholder="ค้นหาเลขที่ T/O">
+            <button type="button" id="closeTOPickerButton" aria-label="ปิด">x</button>
+          </div>
+        </div>
+        <div class="to-picker-table" id="toPickerList"></div>
+        <div class="to-picker-footer">
+          <div>
+            <span>จำนวนใบ T/O</span>
+            <strong id="toPickerCount">0 รายการ</strong>
+          </div>
+          <div>
+            <span>น้ำหนักทั้งหมด</span>
+            <strong id="toPickerWeight">0 กิโลกรัม</strong>
+          </div>
+          <div class="to-picker-actions">
+            <button type="button" class="ghost" id="cancelTOPickerButton">ยกเลิก</button>
+            <button type="button" id="confirmTOPickerButton">ตกลง</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="hubPickerDialog" class="hub-picker-modal">
+      <form method="dialog">
+        <div class="to-picker-head">
+          <h3>เลือก HUB</h3>
+          <div class="to-picker-search">
+            <input id="hubPickerSearch" type="search" placeholder="ค้นหา HUB">
+            <button type="button" id="closeHubPickerButton" aria-label="ปิด">x</button>
+          </div>
+        </div>
+        <div class="hub-picker-list" id="hubPickerList"></div>
+        <div class="to-picker-footer">
+          <div>
+            <span>HUB ที่เลือกได้</span>
+            <strong id="hubPickerCount">0 รายการ</strong>
+          </div>
+          <div class="to-picker-actions">
+            <button type="button" class="ghost" id="cancelHubPickerButton">ยกเลิก</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="toCardTemplate">
+      <article class="to-card" draggable="true">
+        <div>
+          <strong class="to-product"></strong>
+          <span class="to-code"></span>
+          <em class="to-customer"></em>
+        </div>
+        <b class="to-qty"></b>
+      </article>
+    </template>
+
+    <script src="app.js?v=v0.3.1-poc"></script>
+  </body>
+</html>
