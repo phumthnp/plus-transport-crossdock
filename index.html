@@ -4,45 +4,69 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Plus Transport Crossdock POC</title>
-    <link rel="stylesheet" href="styles.css?v=v0.3.0-poc">
+    <link rel="stylesheet" href="styles.css?v=v0.3.1-poc">
   </head>
   <body>
     <header class="topbar">
       <div>
         <p class="eyebrow">PLUS TRANSPORT</p>
         <h1>Transport Planning Board</h1>
-        <span class="version-badge">v0.3.0-poc</span>
+        <span class="version-badge">v0.3.1-poc</span>
       </div>
       <div class="summary-strip" id="summaryStrip"></div>
     </header>
 
     <main class="board">
       <section class="panel source-panel">
-        <div class="panel-head">
-          <div>
-            <p class="eyebrow">Planning Board</p>
-            <h2>ข้อมูลแผน</h2>
-          </div>
-          <span class="hint">ลากสินค้าไปวางในรถ</span>
-        </div>
-        <section class="to-selection-panel">
-          <div class="sidebar-section-head">
+        <div class="source-rail">
+          <div class="panel-head">
             <div>
-              <p class="eyebrow">T/O</p>
-              <h3>รายการที่เลือกมาจัดแผน</h3>
+              <p class="eyebrow">Planning Board</p>
+              <h2>ข้อมูลแผน</h2>
             </div>
-            <div class="sidebar-actions">
-              <button type="button" class="link-button" id="toggleTOPanelButton">ย่อ</button>
-              <button type="button" class="link-button" id="addTOButton">+ เพิ่ม T/O</button>
+            <span class="hint">ลากสินค้าไปวางในรถ</span>
+          </div>
+          <section class="to-selection-panel">
+            <div class="sidebar-section-head">
+              <div>
+                <p class="eyebrow">T/O</p>
+                <h3>รายการที่เลือกมาจัดแผน</h3>
+              </div>
+              <div class="sidebar-actions">
+                <button type="button" class="link-button" id="toggleTOPanelButton">ย่อ</button>
+                <button type="button" class="link-button" id="addTOButton">+ เพิ่ม T/O</button>
+              </div>
+            </div>
+            <div id="selectedTOList" class="selected-to-list"></div>
+          </section>
+          <div class="origin-section-head">
+            <div>
+              <p class="eyebrow">Locations</p>
+              <h3>สถานที่</h3>
             </div>
           </div>
-          <div id="selectedTOList" class="selected-to-list"></div>
-        </section>
-        <div class="origin-section-head">
-          <p class="eyebrow">Origins</p>
-          <h3>ต้นทาง</h3>
+          <div id="originList" class="origin-list"></div>
+          <section class="hub-panel">
+            <div class="sidebar-section-head">
+              <div>
+                <p class="eyebrow">HUB</p>
+                <h3>สถานที่กระจายสินค้า</h3>
+              </div>
+              <button type="button" class="link-button" id="addHubButton">+ เพิ่ม</button>
+            </div>
+            <div id="hubList" class="hub-list"></div>
+          </section>
+          <section class="delivery-panel">
+            <div class="sidebar-section-head">
+              <div>
+                <p class="eyebrow">Delivery</p>
+                <h3>สถานที่จัดส่ง</h3>
+              </div>
+            </div>
+            <div id="deliveryList" class="delivery-list"></div>
+          </section>
         </div>
-        <div id="originList" class="origin-list"></div>
+        <aside class="origin-detail-panel" id="originDetail"></aside>
       </section>
 
       <section class="planning-stage">
@@ -116,6 +140,28 @@
       </form>
     </dialog>
 
+    <dialog id="hubPickerDialog" class="hub-picker-modal">
+      <form method="dialog">
+        <div class="to-picker-head">
+          <h3>เลือก HUB</h3>
+          <div class="to-picker-search">
+            <input id="hubPickerSearch" type="search" placeholder="ค้นหา HUB">
+            <button type="button" id="closeHubPickerButton" aria-label="ปิด">x</button>
+          </div>
+        </div>
+        <div class="hub-picker-list" id="hubPickerList"></div>
+        <div class="to-picker-footer">
+          <div>
+            <span>HUB ที่เลือกได้</span>
+            <strong id="hubPickerCount">0 รายการ</strong>
+          </div>
+          <div class="to-picker-actions">
+            <button type="button" class="ghost" id="cancelHubPickerButton">ยกเลิก</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
     <template id="toCardTemplate">
       <article class="to-card" draggable="true">
         <div>
@@ -127,6 +173,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=v0.3.0-poc"></script>
+    <script src="app.js?v=v0.3.1-poc"></script>
   </body>
 </html>
