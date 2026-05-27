@@ -480,7 +480,7 @@ function moveAllocationsToPickupStop(truckId, allocationIds, fromStopId, targetS
   const targetStop = stopById(truck, targetStopId);
   const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
   if (!truck || !fromStop || !targetStop || !ids.length) return false;
-  if (fromStop.id === targetStop.id || targetStop.type !== "PICK" || fromStop.type !== "PICK") return false;
+  if (fromStop.id === targetStop.id || targetStop.type !== fromStop.type) return false;
   if (fromStop.location !== targetStop.location) return false;
 
   const nextStops = truck.routeStops.map(stop => ({
@@ -494,6 +494,7 @@ function moveAllocationsToPickupStop(truckId, allocationIds, fromStopId, targetS
 
   truck.routeStops = compacted;
   clearRoutePickupSelection();
+  clearRouteDropSelection();
   render();
   return true;
 }
@@ -2175,7 +2176,7 @@ function addPickupMergeHandlers(card, truck, stop) {
   card.addEventListener("dragover", event => {
     if (!dragged?.routeSplit || dragged.fromRouteStopId === stop.id) return;
     const fromStop = stopById(truck, dragged.fromRouteStopId);
-    if (!fromStop || fromStop.location !== stop.location) return;
+    if (!fromStop || fromStop.location !== stop.location || fromStop.type !== stop.type) return;
     event.preventDefault();
     card.classList.add("is-merge-over");
   });
@@ -2184,7 +2185,7 @@ function addPickupMergeHandlers(card, truck, stop) {
     if (!dragged?.routeSplit || dragged.fromRouteStopId === stop.id) return;
     const allocationIds = dragged.allocationIds || [dragged.allocationId];
     const fromStop = stopById(truck, dragged.fromRouteStopId);
-    if (!fromStop || fromStop.location !== stop.location) return;
+    if (!fromStop || fromStop.location !== stop.location || fromStop.type !== stop.type) return;
     event.preventDefault();
     card.classList.remove("is-merge-over");
     moveAllocationsToPickupStop(truck.id, allocationIds, dragged.fromRouteStopId, stop.id);
@@ -2764,7 +2765,7 @@ function routeStopNode(truck, stop) {
     <div class="destination-items"></div>
   `;
   addRouteStopDragHandlers(card, truck, stop);
-  if (isPickupLike) addPickupMergeHandlers(card, truck, stop);
+  addPickupMergeHandlers(card, truck, stop);
   const items = card.querySelector(".destination-items");
   const grouped = stop.type === "PICK"
     ? groupAllocationsByCustomer(allocations)

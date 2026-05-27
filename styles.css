@@ -1324,6 +1324,8 @@ button:hover {
 }
 
 .pickup-card.is-merge-over,
+.drop-card.is-merge-over,
+.inbound-card.is-merge-over,
 .pickup-card.is-stop-over,
 .drop-card.is-stop-over,
 .inbound-card.is-stop-over {
@@ -1331,7 +1333,9 @@ button:hover {
   outline-offset: 4px;
 }
 
-.pickup-card.is-merge-over {
+.pickup-card.is-merge-over,
+.drop-card.is-merge-over,
+.inbound-card.is-merge-over {
   background: #d7ffd9;
 }
 
