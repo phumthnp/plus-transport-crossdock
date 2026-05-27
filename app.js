@@ -79,6 +79,8 @@ const availableTOCatalog = [
   }
 ];
 
+const hubCatalog = ["HUB-บางนา", "HUB-หลักสี่", "HUB-ระยอง", "HUB-บางบอน", "HUB-พัทยา"];
+
 let state;
 let dragged = null;
 let activeAllocation = null;
@@ -87,6 +89,9 @@ let selectedTruckItem = null;
 let selectedTruckItems = new Set();
 let selectedSourceItems = new Set();
 let selectedAllocationItems = new Set();
+let selectedRoutePickups = new Set();
+let selectedRouteDrops = new Set();
+let selectedHubOutboundItems = new Set();
 let activeRouteOrderId = null;
 let draftTOSelection = new Set();
 let expandedTOSelection = new Set();
@@ -94,6 +99,9 @@ let toPickerSearchText = "";
 let selectedTOCollapsed = false;
 let mockTOCounter = 1;
 let zoomLevel = 1;
+let activeOriginLocation = null;
+let activeHubId = null;
+let hubPickerSearchText = "";
 
 const els = {
   summaryStrip: document.querySelector("#summaryStrip"),
@@ -101,6 +109,10 @@ const els = {
   addTOButton: document.querySelector("#addTOButton"),
   toggleTOPanelButton: document.querySelector("#toggleTOPanelButton"),
   originList: document.querySelector("#originList"),
+  originDetail: document.querySelector("#originDetail"),
+  hubList: document.querySelector("#hubList"),
+  addHubButton: document.querySelector("#addHubButton"),
+  deliveryList: document.querySelector("#deliveryList"),
   truckCanvas: document.querySelector("#truckCanvas"),
   zoomOutButton: document.querySelector("#zoomOutButton"),
   zoomInButton: document.querySelector("#zoomInButton"),
@@ -128,12 +140,20 @@ els.confirmTOPickerButton = document.querySelector("#confirmTOPickerButton");
 els.cancelTOPickerButton = document.querySelector("#cancelTOPickerButton");
 els.closeTOPickerButton = document.querySelector("#closeTOPickerButton");
 els.mockTOButton = document.querySelector("#mockTOButton");
+els.hubPickerDialog = document.querySelector("#hubPickerDialog");
+els.hubPickerList = document.querySelector("#hubPickerList");
+els.hubPickerSearch = document.querySelector("#hubPickerSearch");
+els.hubPickerCount = document.querySelector("#hubPickerCount");
+els.cancelHubPickerButton = document.querySelector("#cancelHubPickerButton");
+els.closeHubPickerButton = document.querySelector("#closeHubPickerButton");
 
 function createInitialState() {
   return {
     orders: structuredClone(initialOrders),
     trucks: [createTruck("Dummy", "")],
+    hubs: [],
     nextTruck: 2,
+    nextHub: 1,
     nextOrder: initialOrders.length + 1,
     nextAllocation: 1
   };
@@ -152,6 +172,7 @@ function createTruck(plate = "Dummy", origin = "", options = {}) {
     capacity: 6000,
     itemIds: [],
     destinations: [],
+    routeStops: [],
     originSequence: origin ? [origin] : []
   };
 }
@@ -202,11 +223,244 @@ function qtyInTruck(order, truckId) {
     .reduce((sum, allocation) => sum + allocation.qty, 0);
 }
 
+function routeQtyForTruck(order, truckId) {
+  return order.allocations
+    .filter(allocation => allocation.truckId === truckId && allocation.status !== "MOVED_FROM_HUB")
+    .reduce((sum, allocation) => sum + allocation.qty, 0);
+}
+
 function truckWeight(truck) {
   return truck.itemIds.reduce((sum, orderId) => {
     const order = orderById(orderId);
-    return sum + qtyInTruck(order, truck.id) * order.weightPerPack;
+    return sum + routeQtyForTruck(order, truck.id) * order.weightPerPack;
   }, 0);
+}
+
+function routeAllocationsForTruck(truckId) {
+  return allocationsForTruck(truckId).filter(allocation =>
+    allocation.destination !== "TRUCK" && allocation.status !== "MOVED_FROM_HUB"
+  );
+}
+
+function shortLocationName(location) {
+  return location.replace(/^โรงงาน\s*/, "");
+}
+
+function createRouteStop(type, location) {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    location,
+    allocationIds: []
+  };
+}
+
+function stopLabel(stop) {
+  if (stop.type === "PICK") return `PICK - ${shortLocationName(stop.location)}`;
+  if (stop.type === "OUTBOUND") return `OUTBOUND - ${stop.location}`;
+  if (stop.type === "INBOUND") return `INBOUND - ${stop.location}`;
+  return `DROP - ${stop.location}`;
+}
+
+function stopById(truck, stopId) {
+  return (truck.routeStops || []).find(stop => stop.id === stopId);
+}
+
+function allocationById(allocationId) {
+  return findAllocation(allocationId);
+}
+
+function addAllocationToStop(stop, allocationId) {
+  if (!stop.allocationIds.includes(allocationId)) stop.allocationIds.push(allocationId);
+}
+
+function removeAllocationFromStops(truck, allocationId) {
+  truck.routeStops = (truck.routeStops || [])
+    .map(stop => ({ ...stop, allocationIds: stop.allocationIds.filter(id => id !== allocationId) }))
+    .filter(stop => stop.allocationIds.length > 0);
+  selectedRoutePickups = new Set([...selectedRoutePickups].filter(key => parseRoutePickupKey(key).allocationId !== allocationId));
+  selectedRouteDrops = new Set([...selectedRouteDrops].filter(key => parseRouteDropKey(key).allocationId !== allocationId));
+  selectedHubOutboundItems.delete(allocationId);
+}
+
+function ensureAutoRouteStops(truck, allocation, order) {
+  truck.routeStops ||= [];
+  let pickup = truck.routeStops.find(stop => stop.type === "PICK" && stop.location === order.origin);
+  if (!pickup) {
+    pickup = createRouteStop("PICK", order.origin);
+    const firstDropIndex = truck.routeStops.findIndex(stop => stop.type === "DROP");
+    if (firstDropIndex >= 0) truck.routeStops.splice(firstDropIndex, 0, pickup);
+    else truck.routeStops.push(pickup);
+  }
+  addAllocationToStop(pickup, allocation.id);
+
+  let drop = truck.routeStops.find(stop => stop.type === "DROP" && stop.location === order.customer);
+  if (!drop) {
+    drop = createRouteStop("DROP", order.customer);
+    truck.routeStops.push(drop);
+  }
+  addAllocationToStop(drop, allocation.id);
+}
+
+function ensureHubOutboundRouteStops(truck, allocation, order, hubName) {
+  truck.routeStops ||= [];
+  let outbound = truck.routeStops.find(stop => stop.type === "OUTBOUND" && stop.location === hubName);
+  if (!outbound) {
+    outbound = createRouteStop("OUTBOUND", hubName);
+    const firstDropIndex = truck.routeStops.findIndex(stop => stop.type === "DROP");
+    if (firstDropIndex >= 0) truck.routeStops.splice(firstDropIndex, 0, outbound);
+    else truck.routeStops.push(outbound);
+  }
+  addAllocationToStop(outbound, allocation.id);
+
+  let drop = truck.routeStops.find(stop => stop.type === "DROP" && stop.location === order.customer);
+  if (!drop) {
+    drop = createRouteStop("DROP", order.customer);
+    truck.routeStops.push(drop);
+  }
+  addAllocationToStop(drop, allocation.id);
+}
+
+function compactRouteStops(truck) {
+  truck.routeStops = (truck.routeStops || []).filter(stop => stop.allocationIds.some(allocationId => allocationById(allocationId)));
+}
+
+function routePickupKey(allocationId, fromStopId) {
+  return `${fromStopId}:${allocationId}`;
+}
+
+function parseRoutePickupKey(key) {
+  const [fromStopId, allocationId] = key.split(":");
+  return { fromStopId, allocationId };
+}
+
+function selectedPickupIdsForStop(fromStopId, fallbackAllocationId = null) {
+  const ids = [...selectedRoutePickups]
+    .map(parseRoutePickupKey)
+    .filter(selection => selection.fromStopId === fromStopId)
+    .map(selection => selection.allocationId);
+  return ids.length ? ids : (fallbackAllocationId ? [fallbackAllocationId] : []);
+}
+
+function clearRoutePickupSelection() {
+  selectedRoutePickups.clear();
+}
+
+function routeDropKey(allocationId, fromStopId) {
+  return `${fromStopId}:${allocationId}`;
+}
+
+function parseRouteDropKey(key) {
+  const [fromStopId, allocationId] = key.split(":");
+  return { fromStopId, allocationId };
+}
+
+function selectedDropIdsForStop(fromStopId, fallbackAllocationId = null) {
+  const ids = [...selectedRouteDrops]
+    .map(parseRouteDropKey)
+    .filter(selection => selection.fromStopId === fromStopId)
+    .map(selection => selection.allocationId);
+  return ids.length ? ids : (fallbackAllocationId ? [fallbackAllocationId] : []);
+}
+
+function clearRouteDropSelection() {
+  selectedRouteDrops.clear();
+}
+
+function selectedHubOutboundIds(fallbackId = null) {
+  return selectedHubOutboundItems.size ? [...selectedHubOutboundItems] : (fallbackId ? [fallbackId] : []);
+}
+
+function clearHubOutboundSelection() {
+  selectedHubOutboundItems.clear();
+}
+
+function clearActionSelections(except = null) {
+  if (except !== "source") selectedSourceItems.clear();
+  if (except !== "route-pickup") clearRoutePickupSelection();
+  if (except !== "route-drop") clearRouteDropSelection();
+  if (except !== "hub-outbound") clearHubOutboundSelection();
+  if (except !== "hub-inbound") clearAllocationSelection();
+  if (except !== "truck") {
+    selectedTruckItems.clear();
+    selectedTruckItem = null;
+  }
+}
+
+function canSplitPickupStop(truck, allocationIds, fromStopId, requestedIndex) {
+  const ids = Array.isArray(allocationIds) ? allocationIds : [allocationIds];
+  if (!truck || !ids.length) return false;
+  const fromStop = stopById(truck, fromStopId);
+  if (!fromStop) return false;
+  const dropIndexes = ids.map(allocationId => (truck.routeStops || []).findIndex(stop =>
+    stop.type === "DROP" && stop.allocationIds.includes(allocationId)
+  ));
+  if (dropIndexes.some(index => index < 0)) return false;
+  const currentPickIndex = truck.routeStops.findIndex(stop => stop.id === fromStopId);
+  const firstDropIndex = Math.min(...dropIndexes);
+  const insertIndex = Math.max(0, Math.min(requestedIndex, truck.routeStops.length));
+  const movesEntireStop = fromStop.allocationIds.every(id => ids.includes(id));
+  return insertIndex <= firstDropIndex &&
+    insertIndex !== currentPickIndex &&
+    (!movesEntireStop || insertIndex !== currentPickIndex + 1);
+}
+
+function routeStopsAreValid(routeStops) {
+  const picked = new Set();
+  for (const stop of routeStops || []) {
+    if (stop.type === "PICK" || stop.type === "OUTBOUND") {
+      stop.allocationIds.forEach(id => picked.add(id));
+      continue;
+    }
+    if (stop.allocationIds.some(id => !picked.has(id))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function moveAllocationsToPickupStop(truckId, allocationIds, fromStopId, targetStopId) {
+  const truck = truckById(truckId);
+  const fromStop = stopById(truck, fromStopId);
+  const targetStop = stopById(truck, targetStopId);
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  if (!truck || !fromStop || !targetStop || !ids.length) return false;
+  if (fromStop.id === targetStop.id || targetStop.type !== "PICK" || fromStop.type !== "PICK") return false;
+  if (fromStop.location !== targetStop.location) return false;
+
+  const nextStops = truck.routeStops.map(stop => ({
+    ...stop,
+    allocationIds: stop.allocationIds.filter(id => !(stop.id === fromStopId && ids.includes(id)))
+  }));
+  const target = nextStops.find(stop => stop.id === targetStopId);
+  ids.forEach(id => addAllocationToStop(target, id));
+  const compacted = nextStops.filter(stop => stop.allocationIds.length > 0);
+  if (!routeStopsAreValid(compacted)) return false;
+
+  truck.routeStops = compacted;
+  clearRoutePickupSelection();
+  render();
+  return true;
+}
+
+function moveRouteStopToIndex(truckId, fromStopId, requestedIndex) {
+  const truck = truckById(truckId);
+  if (!truck) return false;
+  const fromIndex = truck.routeStops.findIndex(stop => stop.id === fromStopId);
+  if (fromIndex < 0) return false;
+  let insertIndex = Math.max(0, Math.min(requestedIndex, truck.routeStops.length));
+  if (insertIndex === fromIndex || insertIndex === fromIndex + 1) return false;
+
+  const nextStops = truck.routeStops.map(stop => ({ ...stop, allocationIds: [...stop.allocationIds] }));
+  const [moved] = nextStops.splice(fromIndex, 1);
+  if (fromIndex < insertIndex) insertIndex -= 1;
+  nextStops.splice(insertIndex, 0, moved);
+  if (!routeStopsAreValid(nextStops)) return false;
+
+  truck.routeStops = nextStops;
+  clearRoutePickupSelection();
+  render();
+  return true;
 }
 
 function truckOrigins(truck) {
@@ -341,14 +595,23 @@ function addToTruck(truckId, orderId, qty = unassignedQty(orderById(orderId)), o
   ensureOriginSequence(truck, order.origin);
   syncTruckOrigins(truck);
 
-  order.allocations.push({
+  const shouldAutoRoute = options.autoRoute !== false && truck.sourceType !== "HUB";
+  const destination = shouldAutoRoute ? order.customer : "TRUCK";
+  if (shouldAutoRoute && !truck.destinations.includes(destination)) {
+    truck.destinations.push(destination);
+  }
+
+  const allocation = {
     id: `A-${state.nextAllocation++}`,
     truckId,
-    destination: "TRUCK",
-    status: "IN_TRUCK",
+    destination,
+    status: shouldAutoRoute ? "ASSIGNED" : "IN_TRUCK",
     qty,
+    autoRoute: shouldAutoRoute,
     timestamp: Date.now()
-  });
+  };
+  order.allocations.push(allocation);
+  if (shouldAutoRoute) ensureAutoRouteStops(truck, allocation, order);
 
   if (!options.skipRender) render();
 }
@@ -362,6 +625,49 @@ function addManyToTruck(truckId, orderIds) {
   });
   selectedSourceItems.clear();
   render();
+}
+
+function loadHubOutboundToTruck(allocationIds, targetTruckId) {
+  const truck = truckById(targetTruckId);
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  if (!truck || !ids.length) return false;
+
+  ids.forEach(allocationId => {
+    const found = allocationById(allocationId);
+    const transferName = found?.allocation.hubName || found?.allocation.transferLocationName;
+    if (!found || found.allocation.status !== "STAGED_IN_HUB" || !transferName) return;
+    const sourceTruck = truckById(found.allocation.truckId);
+    if (sourceTruck) {
+      removeAllocationFromStops(sourceTruck, allocationId);
+      compactRouteStops(sourceTruck);
+    }
+
+    found.allocation.status = "MOVED_FROM_HUB";
+    const qty = found.allocation.qty;
+    if (!truck.itemIds.includes(found.order.id)) truck.itemIds.push(found.order.id);
+    ensureOriginSequence(truck, transferName);
+    syncTruckOrigins(truck);
+
+    const outboundAllocation = {
+      id: `A-${state.nextAllocation++}`,
+      truckId: truck.id,
+      destination: found.order.customer,
+      status: "ASSIGNED",
+      qty,
+      autoRoute: true,
+      sourceTransferType: found.allocation.hubId ? "HUB" : found.allocation.transferLocationType,
+      sourceTransferName: transferName,
+      sourceHubId: found.allocation.hubId || null,
+      sourceHubName: found.allocation.hubName || null,
+      timestamp: Date.now()
+    };
+    found.order.allocations.push(outboundAllocation);
+    ensureHubOutboundRouteStops(truck, outboundAllocation, found.order, transferName);
+  });
+
+  clearHubOutboundSelection();
+  render();
+  return true;
 }
 
 function truckSelectionKey(truckId, orderId) {
@@ -571,6 +877,30 @@ function undoAllocation(allocationId) {
 
   order.allocations = order.allocations.filter(item => item.id !== allocationId);
   const truck = truckById(allocation.truckId);
+  if (allocation.autoRoute) {
+    if (truck) {
+      removeAllocationFromStops(truck, allocation.id);
+      const hasMoreOrderPlan = order.allocations.some(item => item.truckId === truck.id);
+      const hasMoreDestinationPlan = state.orders.some(item =>
+        item.allocations.some(plan =>
+          plan.truckId === truck.id &&
+          plan.destination === allocation.destination &&
+          plan.status !== "MOVED_FROM_HUB"
+        )
+      );
+      if (!hasMoreOrderPlan) truck.itemIds = truck.itemIds.filter(id => id !== order.id);
+      if (!hasMoreDestinationPlan) {
+        truck.destinations = truck.destinations.filter(destination => destination !== allocation.destination);
+      }
+      if (!truckHasPlanForOrigin(truck, order.origin)) {
+        truck.originSequence = (truck.originSequence || []).filter(origin => origin !== order.origin);
+      }
+      syncTruckOrigins(truck);
+    }
+    render();
+    return;
+  }
+
   if (truck) {
     if (!truck.itemIds.includes(order.id)) truck.itemIds.push(order.id);
     ensureOriginSequence(truck, order.origin);
@@ -626,6 +956,7 @@ function availableSourceIds(orders) {
 }
 
 function setSourceSelection(orderIds, selected) {
+  if (selected) clearActionSelections("source");
   orderIds.forEach(orderId => {
     if (selected) selectedSourceItems.add(orderId);
     else selectedSourceItems.delete(orderId);
@@ -884,9 +1215,12 @@ function renderTOSelector() {
 
 function render() {
   if (activeRouteOrderId && !orderById(activeRouteOrderId)) activeRouteOrderId = null;
+  if (activeHubId && !state.hubs.some(hub => hub.id === activeHubId)) activeHubId = null;
   renderSummary();
   renderSelectedTOs();
   renderOrigins();
+  renderHubs();
+  renderDeliveryTracking();
   renderTrucks();
   renderZoom();
   requestAnimationFrame(drawConnectors);
@@ -938,24 +1272,283 @@ function renderOrigins() {
     return order && unassignedQty(order) > 0;
   }));
   const grouped = groupBy(state.orders, "origin");
+  const originEntries = Object.entries(grouped);
+  if (!originEntries.some(([origin]) => origin === activeOriginLocation)) {
+    activeOriginLocation = originEntries[0]?.[0] || null;
+  }
   els.originList.innerHTML = "";
-  Object.entries(grouped).forEach(([origin, orders]) => {
-    const group = document.createElement("section");
-    group.className = "origin-group";
-    group.innerHTML = `<div class="to-stack"></div>`;
-    group.prepend(sourceHeader(origin, availableSourceIds(orders), "origin-select"));
-    const stack = group.querySelector(".to-stack");
-    const customerGroups = groupBy(orders, "customer");
-    Object.entries(customerGroups).forEach(([customer, customerOrders]) => {
-      stack.append(sourceHeader(customer, availableSourceIds(customerOrders), "customer-select"));
-      customerOrders.forEach(order => stack.append(toCard(order, unassignedQty(order), {
-        muted: unassignedQty(order) === 0,
-        hideCustomer: true,
-        sourceSelectable: true
+  originEntries.forEach(([origin, orders]) => {
+    const availableIds = availableSourceIds(orders);
+    const totalQty = orders.reduce((sum, order) => sum + order.totalQty, 0);
+    const remainingQty = orders.reduce((sum, order) => sum + Math.max(unassignedQty(order), 0), 0);
+    const pendingTransfer = originPendingTransferAllocations(origin);
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "origin-tab";
+    if (!activeHubId && origin === activeOriginLocation) tab.classList.add("is-active");
+    if (!availableIds.length) tab.classList.add("is-empty");
+    if (pendingTransfer.length) tab.classList.add("has-transfer-pending");
+    else if (!availableIds.length && originTransferAllocations(origin).length) tab.classList.add("is-complete");
+    tab.innerHTML = `
+      <strong>${origin}</strong>
+      <span>${pendingTransfer.length ? `รอส่ง ${pendingTransfer.length.toLocaleString()} items >` : `${remainingQty.toLocaleString()}/${totalQty.toLocaleString()} แพ็ก`}</span>
+    `;
+    addOriginTransferDropHandlers(tab, origin);
+    tab.addEventListener("click", () => {
+      activeOriginLocation = origin;
+      activeHubId = null;
+      render();
+    });
+    els.originList.append(tab);
+  });
+
+  if (!activeHubId) renderOriginDetail(grouped[activeOriginLocation] || []);
+}
+
+function openHubSelector() {
+  hubPickerSearchText = "";
+  if (els.hubPickerSearch) els.hubPickerSearch.value = "";
+  renderHubSelector();
+  els.hubPickerDialog?.showModal();
+}
+
+function availableHubs() {
+  const existing = new Set(state.hubs.map(hub => hub.name));
+  const keyword = hubPickerSearchText.trim().toLowerCase();
+  return hubCatalog
+    .filter(name => !existing.has(name))
+    .filter(name => !keyword || name.toLowerCase().includes(keyword));
+}
+
+function renderHubSelector() {
+  if (!els.hubPickerList) return;
+  const hubs = availableHubs();
+  els.hubPickerList.innerHTML = "";
+  hubs.forEach(name => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "hub-picker-option";
+    button.innerHTML = `
+      <strong>${name}</strong>
+      <span>พร้อมเพิ่มเป็นจุด Transfer</span>
+    `;
+    button.addEventListener("click", () => addHub(name));
+    els.hubPickerList.append(button);
+  });
+  if (!hubs.length) {
+    const empty = document.createElement("div");
+    empty.className = "to-picker-empty";
+    empty.textContent = "ไม่พบ HUB ที่พร้อมเพิ่ม";
+    els.hubPickerList.append(empty);
+  }
+  if (els.hubPickerCount) els.hubPickerCount.textContent = `${hubs.length.toLocaleString()} รายการ`;
+}
+
+function addHub(name) {
+  if (!name || state.hubs.some(hub => hub.name === name)) {
+    alert("ไม่พบ HUB ที่เลือก หรือ HUB นี้ถูกเพิ่มแล้ว");
+    return;
+  }
+  const hub = { id: `HUB-${state.nextHub++}`, name };
+  state.hubs.push(hub);
+  activeHubId = hub.id;
+  activeOriginLocation = null;
+  els.hubPickerDialog?.close();
+  render();
+}
+
+function hubInboundAllocations(hubId) {
+  return state.orders.flatMap(order =>
+    order.allocations
+      .filter(allocation => allocation.hubId === hubId && ["STAGED_IN_HUB", "MOVED_FROM_HUB"].includes(allocation.status))
+      .map(allocation => ({ ...allocation, order }))
+  );
+}
+
+function hubPendingAllocations(hubId) {
+  return hubInboundAllocations(hubId).filter(allocation => allocation.status === "STAGED_IN_HUB");
+}
+
+function originTransferAllocations(origin) {
+  return state.orders.flatMap(order =>
+    order.allocations
+      .filter(allocation =>
+        allocation.transferLocationType === "ORIGIN" &&
+        allocation.transferLocationName === origin &&
+        ["STAGED_IN_HUB", "MOVED_FROM_HUB"].includes(allocation.status)
+      )
+      .map(allocation => ({ ...allocation, order }))
+  );
+}
+
+function originPendingTransferAllocations(origin) {
+  return originTransferAllocations(origin).filter(allocation => allocation.status === "STAGED_IN_HUB");
+}
+
+function renderHubs() {
+  if (!els.hubList) return;
+  els.hubList.innerHTML = "";
+  state.hubs.forEach(hub => {
+    const inbound = hubInboundAllocations(hub.id);
+    const pending = hubPendingAllocations(hub.id);
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "hub-tab";
+    if (hub.id === activeHubId) tab.classList.add("is-active");
+    if (pending.length) tab.classList.add("has-inbound");
+    else if (inbound.length) tab.classList.add("is-complete");
+    tab.innerHTML = `
+      <strong>${hub.name}</strong>
+      <span>${pending.length ? "รอส่ง" : "รอรับ"} ${pending.length.toLocaleString()} items &gt;</span>
+    `;
+    tab.addEventListener("click", () => {
+      activeHubId = hub.id;
+      activeOriginLocation = null;
+      render();
+    });
+    els.hubList.append(tab);
+  });
+  const activeHub = state.hubs.find(hub => hub.id === activeHubId);
+  if (activeHub) renderHubDetail(activeHub);
+}
+
+function renderHubDetail(hub) {
+  if (!els.originDetail) return;
+  const inbound = hubInboundAllocations(hub.id);
+  const pending = inbound.filter(allocation => allocation.status === "STAGED_IN_HUB");
+  els.originDetail.innerHTML = `
+    <div class="origin-detail-head">
+      <p class="eyebrow">Transfer</p>
+      <h3>${hub.name}</h3>
+    </div>
+    <div class="hub-transfer-zone">
+      <span>${inbound.length ? "OUTBOUND" : "ลากสินค้าที่ต้องการกระจายวางที่นี่"}</span>
+      <div class="hub-transfer-stack"></div>
+    </div>
+  `;
+  const zone = els.originDetail.querySelector(".hub-transfer-zone");
+  addHubDropHandlers(zone, hub.id);
+  const stack = els.originDetail.querySelector(".hub-transfer-stack");
+  const groups = groupAllocationsByCustomer(inbound);
+  Object.entries(groups).forEach(([customer, allocations]) => {
+    const title = document.createElement("h4");
+    title.className = "route-customer-title";
+    title.textContent = customer;
+    stack.append(title);
+    allocations.forEach(allocation => stack.append(allocationLine(allocation, {
+      readonly: true,
+      hubOutbound: allocation.status === "STAGED_IN_HUB",
+      muted: allocation.status === "MOVED_FROM_HUB"
+    })));
+  });
+}
+
+function deliveryTrackingGroups() {
+  const groups = new Map();
+  state.orders.forEach(order => {
+    order.allocations.forEach(allocation => {
+      if (allocation.status === "MOVED_FROM_HUB") return;
+      if (!["ASSIGNED", "STAGED_IN_HUB"].includes(allocation.status)) return;
+      const customer = order.customer;
+      if (!groups.has(customer)) groups.set(customer, { customer, planned: 0, delivered: 0, pendingHub: 0 });
+      const group = groups.get(customer);
+      group.planned += 1;
+      if (allocation.status === "ASSIGNED" && allocation.destination === customer) group.delivered += 1;
+      if (allocation.status === "STAGED_IN_HUB") group.pendingHub += 1;
+    });
+  });
+  return [...groups.values()];
+}
+
+function renderDeliveryTracking() {
+  if (!els.deliveryList) return;
+  const groups = deliveryTrackingGroups();
+  els.deliveryList.innerHTML = "";
+  groups.forEach(group => {
+    const tab = document.createElement("article");
+    tab.className = "delivery-tab";
+    tab.classList.add(group.delivered >= group.planned ? "is-complete" : "is-pending");
+    tab.innerHTML = `
+      <strong>${group.customer}</strong>
+      <span>${group.delivered >= group.planned ? "ส่งแล้ว" : "รอส่ง"} ${group.delivered.toLocaleString()}/${group.planned.toLocaleString()} items &gt;</span>
+    `;
+    els.deliveryList.append(tab);
+  });
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.className = "delivery-empty";
+    empty.textContent = "ยังไม่มีสถานที่จัดส่ง";
+    els.deliveryList.append(empty);
+  }
+}
+
+function renderOriginDetail(orders) {
+  if (!els.originDetail) return;
+  const activeHub = state.hubs.find(hub => hub.id === activeHubId);
+  if (activeHub) {
+    renderHubDetail(activeHub);
+    return;
+  }
+  els.originDetail.innerHTML = "";
+  if (!activeOriginLocation || !orders.length) {
+    els.originDetail.innerHTML = `
+      <div class="origin-detail-empty">
+        <strong>ยังไม่มีสถานที่</strong>
+        <span>เพิ่มหรือเลือก T/O เพื่อแสดงรายการสินค้า</span>
+      </div>
+    `;
+    return;
+  }
+
+  const availableIds = availableSourceIds(orders);
+  const header = document.createElement("div");
+  header.className = "origin-detail-head";
+  header.innerHTML = `
+    <p class="eyebrow">ต้นทาง</p>
+    <h3>${activeOriginLocation}</h3>
+  `;
+  header.append(sourceHeader("PICK", availableIds, "origin-pick-select"));
+  els.originDetail.append(header);
+
+  const stack = document.createElement("div");
+  stack.className = "origin-detail-stack";
+  const customerGroups = groupBy(orders, "customer");
+  Object.entries(customerGroups).forEach(([customer, customerOrders]) => {
+    const customerSection = document.createElement("section");
+    customerSection.className = "customer-subtab";
+    customerSection.append(sourceHeader(customer, availableSourceIds(customerOrders), "customer-select"));
+    const customerStack = document.createElement("div");
+    customerStack.className = "to-stack";
+    customerOrders.forEach(order => customerStack.append(toCard(order, unassignedQty(order), {
+      muted: unassignedQty(order) === 0,
+      hideCustomer: true,
+      sourceSelectable: true
+    })));
+    customerSection.append(customerStack);
+    stack.append(customerSection);
+  });
+  const transferAllocations = originTransferAllocations(activeOriginLocation);
+  if (transferAllocations.length) {
+    const outboundSection = document.createElement("section");
+    outboundSection.className = "customer-subtab origin-outbound-section";
+    outboundSection.innerHTML = `<div class="source-select origin-pick-select"><span>OUTBOUND</span></div>`;
+    const outboundStack = document.createElement("div");
+    outboundStack.className = "to-stack";
+    Object.entries(groupAllocationsByCustomer(transferAllocations)).forEach(([customer, allocations]) => {
+      const title = document.createElement("h4");
+      title.className = "route-customer-title";
+      title.textContent = customer;
+      outboundStack.append(title);
+      allocations.forEach(allocation => outboundStack.append(allocationLine(allocation, {
+        readonly: true,
+        hubOutbound: allocation.status === "STAGED_IN_HUB",
+        muted: allocation.status === "MOVED_FROM_HUB"
       })));
     });
-    els.originList.append(group);
-  });
+    outboundSection.append(outboundStack);
+    stack.append(outboundSection);
+  }
+  els.originDetail.append(stack);
 }
 
 function renderTrucks() {
@@ -1030,7 +1623,6 @@ function truckCard(truck) {
       <span>น้ำหนักบรรทุก ${truckWeight(truck).toLocaleString()}/${truck.capacity.toLocaleString()} กก.</span>
     </div>
     <div class="to-stack"></div>
-    <div class="drop-zone">ลากสินค้าที่ต้องการขนมาวางที่นี่</div>
   `;
 
   truckCard.querySelector('[data-field="type"]')?.addEventListener("change", event => {
@@ -1049,7 +1641,6 @@ function truckCard(truck) {
   }
   renderTruckItems(truck, truckCard.querySelector(".to-stack"));
 
-  addDropHandlers(truckCard, truck.id);
   return truckCard;
 }
 
@@ -1058,10 +1649,18 @@ function flowArea(truck) {
   flowArea.className = "flow-area";
 
   const truckAllocations = allocationsForTruck(truck.id);
+  const hasPickups = routeAllocationsForTruck(truck.id).length > 0;
   const hasDestinations = truck.destinations.length || truckAllocations.some(allocation => allocation.destination !== "TRUCK");
+  const isEmptyTruck = !truck.itemIds.length && !truckAllocations.length && !truck.destinations.length;
   const hasHubStop = truck.destinations.some(isHubDestination) || truckAllocations.some(allocation => isHubDestination(allocation.destination));
-  if (hasDestinations) {
-    flowArea.append(destinationList(truck));
+  if (isEmptyTruck) {
+    const dropZone = document.createElement("div");
+    dropZone.className = "drop-zone truck-empty-drop-zone";
+    dropZone.textContent = "ลากสินค้าที่ต้องการขนมาวางที่นี่";
+    flowArea.append(dropZone);
+  }
+  if (hasPickups || hasDestinations) {
+    flowArea.append(routeList(truck));
   }
 
   const options = document.createElement("div");
@@ -1082,13 +1681,14 @@ function flowArea(truck) {
     flowArea.classList.add("is-empty");
   }
 
+  addDropHandlers(flowArea, truck.id);
   return flowArea;
 }
 
 function renderTruckItems(truck, stack) {
   const grouped = truckItemsByOrigin(truck);
   planOrigins(truck).forEach(origin => {
-    const orders = grouped[origin] || [];
+    const orders = (grouped[origin] || []).filter(order => qtyInTruck(order, truck.id) > 0);
     if (!orders.length) return;
     const title = document.createElement("h3");
     title.textContent = origin;
@@ -1112,6 +1712,361 @@ function renderTruckItems(truck, stack) {
       });
     });
   });
+}
+
+function routeList(truck) {
+  const routes = document.createElement("div");
+  routes.className = "destinations";
+  compactRouteStops(truck);
+  if (truck.routeStops?.length) {
+    addRouteSplitDropHandlers(routes, truck);
+    addRouteStopReorderHandlers(routes, truck);
+    truck.routeStops.forEach((stop, index) => {
+      routes.append(routeReorderMarker(index));
+      routes.append(routeStopNode(truck, stop));
+    });
+    routes.append(routeReorderMarker(truck.routeStops.length));
+    return routes;
+  }
+  pickupNodes(truck).forEach(node => routes.append(node));
+  destinationNodes(truck).forEach(node => routes.append(node));
+  return routes;
+}
+
+function routeReorderMarker(index) {
+  const marker = document.createElement("div");
+  marker.className = "route-reorder-marker";
+  marker.dataset.index = index;
+  return marker;
+}
+
+function addRouteStopReorderHandlers(routes, truck) {
+  const clearMarker = () => {
+    routes.querySelectorAll(".route-reorder-marker.is-active").forEach(marker => marker.classList.remove("is-active"));
+  };
+  const showMarker = index => {
+    clearMarker();
+    routes.querySelector(`.route-reorder-marker[data-index="${index}"]`)?.classList.add("is-active");
+  };
+  const planFromEvent = event => {
+    if (!dragged?.routeStopMove || dragged.truckId !== truck.id) return null;
+    const card = event.target.closest("[data-stop-id]");
+    if (!card) return null;
+    const targetStopId = card.dataset.stopId;
+    if (!targetStopId || targetStopId === dragged.routeStopId) return null;
+    const targetIndex = truck.routeStops.findIndex(stop => stop.id === targetStopId);
+    if (targetIndex < 0) return null;
+    const rect = card.getBoundingClientRect();
+    const side = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
+    const insertIndex = targetIndex + (side === "after" ? 1 : 0);
+    return { insertIndex };
+  };
+
+  routes.addEventListener("dragover", event => {
+    const plan = planFromEvent(event);
+    if (!plan) return;
+    event.preventDefault();
+    showMarker(plan.insertIndex);
+  });
+  routes.addEventListener("dragleave", event => {
+    if (!routes.contains(event.relatedTarget)) clearMarker();
+  });
+  routes.addEventListener("drop", event => {
+    const plan = planFromEvent(event);
+    if (!plan) return;
+    event.preventDefault();
+    clearMarker();
+    moveRouteStopToIndex(truck.id, dragged.routeStopId, plan.insertIndex);
+  });
+}
+
+function addRouteSplitDropHandlers(routes, truck) {
+  routes.addEventListener("dragover", event => {
+    if (!dragged?.routeSplit) return;
+    if (event.target.closest(".pickup-card")) return;
+    const plan = routeSplitPlan(truck, dragged.allocationIds || [dragged.allocationId], dragged.fromRouteStopId, event.target.closest("[data-stop-id]")?.dataset.stopId);
+    if (!plan) return;
+    event.preventDefault();
+    routes.classList.add("is-route-split-over");
+  });
+  routes.addEventListener("dragleave", event => {
+    if (!routes.contains(event.relatedTarget)) routes.classList.remove("is-route-split-over");
+  });
+  routes.addEventListener("drop", event => {
+    if (!dragged?.routeSplit) return;
+    if (event.target.closest(".pickup-card")) return;
+    const plan = routeSplitPlan(truck, dragged.allocationIds || [dragged.allocationId], dragged.fromRouteStopId, event.target.closest("[data-stop-id]")?.dataset.stopId);
+    if (!plan) return;
+    event.preventDefault();
+    routes.classList.remove("is-route-split-over");
+    splitPickupStop(truck.id, plan.allocationIds, dragged.fromRouteStopId, plan.insertIndex);
+  });
+}
+
+function routeSplitPlan(truck, allocationIds, fromStopId, targetStopId = null) {
+  const ids = [...new Set(allocationIds.filter(Boolean))];
+  if (!ids.length || !truck?.routeStops?.length) return null;
+  const fromIndex = truck.routeStops.findIndex(stop => stop.id === fromStopId);
+  if (fromIndex < 0) return null;
+  const dropIndexes = ids.map(allocationId => truck.routeStops.findIndex(stop =>
+    stop.type === "DROP" && stop.allocationIds.includes(allocationId)
+  ));
+  if (dropIndexes.some(index => index < 0)) return null;
+  const firstDropIndex = Math.min(...dropIndexes);
+  const targetIndex = targetStopId
+    ? truck.routeStops.findIndex(stop => stop.id === targetStopId)
+    : firstDropIndex;
+  const requestedIndex = targetIndex >= 0 ? targetIndex : firstDropIndex;
+  const insertIndex = Math.min(Math.max(requestedIndex, fromIndex + 1), firstDropIndex);
+  if (!canSplitPickupStop(truck, ids, fromStopId, insertIndex)) return null;
+  return { allocationIds: ids, insertIndex };
+}
+
+function addRouteStopDragHandlers(card, truck, stop) {
+  const head = card.querySelector(".destination-head");
+  head.addEventListener("dragstart", event => {
+    dragged = {
+      routeStopId: stop.id,
+      truckId: truck.id,
+      routeStopMove: true
+    };
+    event.dataTransfer.setData("text/plain", stop.id);
+    event.dataTransfer.effectAllowed = "move";
+  });
+  head.addEventListener("dragend", () => {
+    dragged = null;
+    document.querySelectorAll(".route-reorder-marker.is-active")
+      .forEach(marker => marker.classList.remove("is-active"));
+  });
+}
+
+function addPickupMergeHandlers(card, truck, stop) {
+  card.addEventListener("dragover", event => {
+    if (!dragged?.routeSplit || dragged.fromRouteStopId === stop.id) return;
+    const fromStop = stopById(truck, dragged.fromRouteStopId);
+    if (!fromStop || fromStop.location !== stop.location) return;
+    event.preventDefault();
+    card.classList.add("is-merge-over");
+  });
+  card.addEventListener("dragleave", () => card.classList.remove("is-merge-over"));
+  card.addEventListener("drop", event => {
+    if (!dragged?.routeSplit || dragged.fromRouteStopId === stop.id) return;
+    const allocationIds = dragged.allocationIds || [dragged.allocationId];
+    const fromStop = stopById(truck, dragged.fromRouteStopId);
+    if (!fromStop || fromStop.location !== stop.location) return;
+    event.preventDefault();
+    card.classList.remove("is-merge-over");
+    moveAllocationsToPickupStop(truck.id, allocationIds, dragged.fromRouteStopId, stop.id);
+  });
+}
+
+function addHubDropHandlers(zone, hubId) {
+  zone.addEventListener("dragover", event => {
+    if (!dragged?.dropToHub) return;
+    event.preventDefault();
+    zone.classList.add("is-over");
+  });
+  zone.addEventListener("dragleave", () => zone.classList.remove("is-over"));
+  zone.addEventListener("drop", event => {
+    if (!dragged?.dropToHub) return;
+    event.preventDefault();
+    zone.classList.remove("is-over");
+    moveDropAllocationsToHub(hubId, dragged.allocationIds || [dragged.allocationId], dragged.fromRouteStopId);
+  });
+}
+
+function addOriginTransferDropHandlers(tab, origin) {
+  tab.addEventListener("dragover", event => {
+    if (!dragged?.dropToHub) return;
+    event.preventDefault();
+    tab.classList.add("is-over");
+  });
+  tab.addEventListener("dragleave", () => tab.classList.remove("is-over"));
+  tab.addEventListener("drop", event => {
+    if (!dragged?.dropToHub) return;
+    event.preventDefault();
+    event.stopPropagation();
+    tab.classList.remove("is-over");
+    moveDropAllocationsToOrigin(origin, dragged.allocationIds || [dragged.allocationId], dragged.fromRouteStopId);
+  });
+}
+
+function moveDropAllocationsToHub(hubId, allocationIds, fromStopId) {
+  const hub = state.hubs.find(item => item.id === hubId);
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  const foundItems = ids.map(allocationById).filter(Boolean);
+  if (!hub || !ids.length || foundItems.length !== ids.length) return false;
+  const truck = truckById(foundItems[0].allocation.truckId);
+  const fromStop = stopById(truck, fromStopId);
+  if (!truck || !fromStop || fromStop.type !== "DROP") return false;
+
+  const fromIndex = truck.routeStops.findIndex(stop => stop.id === fromStopId);
+  fromStop.allocationIds = fromStop.allocationIds.filter(id => !ids.includes(id));
+
+  let inbound = truck.routeStops.find(stop => stop.type === "INBOUND" && stop.location === hub.name);
+  if (!inbound) {
+    inbound = createRouteStop("INBOUND", hub.name);
+    truck.routeStops.splice(fromIndex + 1, 0, inbound);
+  }
+  ids.forEach(id => addAllocationToStop(inbound, id));
+  foundItems.forEach(({ allocation }) => {
+    allocation.destination = `HUB:${hub.name}`;
+    allocation.status = "STAGED_IN_HUB";
+    allocation.hubId = hub.id;
+    allocation.hubName = hub.name;
+  });
+  compactRouteStops(truck);
+  clearRouteDropSelection();
+  render();
+  return true;
+}
+
+function moveDropAllocationsToOrigin(origin, allocationIds, fromStopId) {
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  const foundItems = ids.map(allocationById).filter(Boolean);
+  if (!origin || !ids.length || foundItems.length !== ids.length) return false;
+  const truck = truckById(foundItems[0].allocation.truckId);
+  const fromStop = stopById(truck, fromStopId);
+  if (!truck || !fromStop || fromStop.type !== "DROP") return false;
+
+  const fromIndex = truck.routeStops.findIndex(stop => stop.id === fromStopId);
+  fromStop.allocationIds = fromStop.allocationIds.filter(id => !ids.includes(id));
+
+  let inbound = truck.routeStops.find(stop => stop.type === "INBOUND" && stop.location === origin);
+  if (!inbound) {
+    inbound = createRouteStop("INBOUND", origin);
+    truck.routeStops.splice(fromIndex + 1, 0, inbound);
+  }
+  ids.forEach(id => addAllocationToStop(inbound, id));
+  foundItems.forEach(({ allocation }) => {
+    allocation.destination = `ORIGIN:${origin}`;
+    allocation.status = "STAGED_IN_HUB";
+    allocation.transferLocationType = "ORIGIN";
+    allocation.transferLocationName = origin;
+    allocation.hubId = null;
+    allocation.hubName = null;
+  });
+  compactRouteStops(truck);
+  clearRouteDropSelection();
+  render();
+  return true;
+}
+
+
+function routeStopNode(truck, stop) {
+  const allocations = stop.allocationIds
+    .map(allocationById)
+    .filter(Boolean)
+    .filter(({ allocation }) => allocation.truckId === truck.id)
+    .map(({ order, allocation }) => ({ ...allocation, order }));
+  const node = document.createElement("div");
+  node.className = `destination-node ${stop.type === "PICK" || stop.type === "OUTBOUND" ? "pickup-node" : stop.type === "INBOUND" ? "inbound-node" : "drop-node"}`;
+  node.dataset.stopId = stop.id;
+  const card = document.createElement("article");
+  card.className = stop.type === "PICK" || stop.type === "OUTBOUND"
+    ? "pickup-card"
+    : stop.type === "INBOUND"
+      ? "destination-card inbound-card"
+      : "destination-card drop-card";
+  card.dataset.truckId = truck.id;
+  card.dataset.stopId = stop.id;
+  card.dataset.routeOrderIds = routeIdsAttr(allocations.map(({ order }) => order.id));
+  if (elementHasRouteOrder(card)) card.classList.add("is-route-highlight");
+  card.innerHTML = `
+    <div class="destination-head" draggable="true">
+      <h3>${stopLabel(stop)}</h3>
+    </div>
+    <div class="destination-items"></div>
+  `;
+  addRouteStopDragHandlers(card, truck, stop);
+  if (stop.type === "PICK") addPickupMergeHandlers(card, truck, stop);
+  const items = card.querySelector(".destination-items");
+  const grouped = stop.type === "PICK"
+    ? groupAllocationsByCustomer(allocations)
+    : groupAllocationsByCustomer(allocations);
+  Object.entries(grouped).forEach(([customer, customerAllocations]) => {
+    const title = document.createElement("h4");
+    title.className = "route-customer-title";
+    title.textContent = customer;
+    items.append(title);
+    customerAllocations.forEach(routeAllocation => {
+      items.append(allocationLine(routeAllocation, {
+        readonly: stop.type !== "PICK",
+        hideActions: true,
+        pickupStopId: stop.type === "PICK" ? stop.id : null,
+        dropStopId: stop.type === "DROP" ? stop.id : null
+      }));
+    });
+  });
+  node.append(card);
+  return node;
+}
+
+function splitPickupStop(truckId, allocationIds, fromStopId, requestedIndex) {
+  const truck = truckById(truckId);
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  const foundItems = ids.map(allocationById).filter(Boolean);
+  if (!truck || !foundItems.length || foundItems.length !== ids.length) return;
+  const fromStop = stopById(truck, fromStopId);
+  const dropIndexes = ids.map(allocationId => (truck.routeStops || []).findIndex(stop =>
+    stop.type === "DROP" && stop.allocationIds.includes(allocationId)
+  ));
+  if (!fromStop || dropIndexes.some(index => index < 0)) return;
+
+  const currentPickIndex = truck.routeStops.findIndex(stop => stop.id === fromStopId);
+  let insertIndex = Math.max(0, Math.min(requestedIndex, truck.routeStops.length));
+  const firstDropIndex = Math.min(...dropIndexes);
+  if (insertIndex > firstDropIndex) insertIndex = firstDropIndex;
+  const movesEntireStop = fromStop.allocationIds.every(id => ids.includes(id));
+  if (insertIndex === currentPickIndex || (movesEntireStop && insertIndex === currentPickIndex + 1)) return;
+
+  fromStop.allocationIds = fromStop.allocationIds.filter(id => !ids.includes(id));
+  if (!fromStop.allocationIds.length) {
+    const removedIndex = truck.routeStops.findIndex(stop => stop.id === fromStop.id);
+    truck.routeStops.splice(removedIndex, 1);
+    if (removedIndex < insertIndex) insertIndex -= 1;
+  }
+
+  const newPick = createRouteStop("PICK", foundItems[0].order.origin);
+  newPick.allocationIds.push(...ids);
+  truck.routeStops.splice(insertIndex, 0, newPick);
+  clearRoutePickupSelection();
+  render();
+}
+
+function pickupNodes(truck) {
+  const grouped = groupAllocationsByOrigin(routeAllocationsForTruck(truck.id));
+  return planOrigins(truck)
+    .filter(origin => grouped[origin]?.length)
+    .map(origin => {
+      const allocations = grouped[origin];
+      const node = document.createElement("div");
+      node.className = "destination-node pickup-node";
+      const card = document.createElement("article");
+      card.className = "pickup-card";
+      card.dataset.truckId = truck.id;
+      card.dataset.origin = origin;
+      card.dataset.routeOrderIds = routeIdsAttr(allocations.map(allocation => allocation.order.id));
+      if (elementHasRouteOrder(card)) card.classList.add("is-route-highlight");
+      card.innerHTML = `
+        <div class="destination-head">
+          <h3>PICK - ${shortLocationName(origin)}</h3>
+        </div>
+        <div class="destination-items"></div>
+      `;
+      const items = card.querySelector(".destination-items");
+      Object.entries(groupAllocationsByCustomer(allocations)).forEach(([customer, customerAllocations]) => {
+        const title = document.createElement("h4");
+        title.className = "route-customer-title";
+        title.textContent = customer;
+        items.append(title);
+        customerAllocations.forEach(allocation => {
+          items.append(allocationLine(allocation, { readonly: true }));
+        });
+      });
+      node.append(card);
+      return node;
+    });
 }
 
 function originSequence(truck) {
@@ -1145,100 +2100,52 @@ function originSequence(truck) {
   return section;
 }
 
-function destinationList(truck) {
-  const destinations = document.createElement("div");
-  destinations.className = "destinations";
-
+function destinationNodes(truck) {
   const grouped = groupAllocations(allocationsForTruck(truck.id).filter(allocation => allocation.destination !== "TRUCK"));
   const names = [...new Set([...truck.destinations, ...Object.keys(grouped)])];
-  names.forEach((destination, index) => {
+  return names.map((destination, index) => {
     const allocations = grouped[destination] || [];
     const node = document.createElement("div");
     node.className = "destination-node";
     if (isHubDestination(destination)) node.classList.add("has-hub-spawn");
     const card = document.createElement("article");
     card.className = isHubDestination(destination) ? "hub-card" : "destination-card";
+    if (!isHubDestination(destination)) card.classList.add("drop-card");
     card.dataset.truckId = truck.id;
     card.dataset.destination = destination;
     card.dataset.routeOrderIds = routeIdsAttr(allocations.map(allocation => allocation.order.id));
     if (elementHasRouteOrder(card)) card.classList.add("is-route-highlight");
+    const showDestinationTools = isHubDestination(destination) || allocations.some(allocation => !allocation.autoRoute);
     card.innerHTML = `
       <div class="destination-head">
-        <h3>${destinationLabel(destination)}</h3>
-        <div class="destination-tools">
-          <button type="button" data-action="move-left" ${index === 0 ? "disabled" : ""} aria-label="เลื่อนไปก่อนหน้า">‹</button>
-          <button type="button" data-action="move-right" ${index === names.length - 1 ? "disabled" : ""} aria-label="เลื่อนไปถัดไป">›</button>
-          <button type="button" data-action="remove" aria-label="ลบปลายทาง">×</button>
-        </div>
+        <h3>${isHubDestination(destination) ? destinationLabel(destination) : `DROP - ${destination}`}</h3>
+        ${showDestinationTools ? `
+          <div class="destination-tools">
+            <button type="button" data-action="move-left" ${index === 0 ? "disabled" : ""} aria-label="เลื่อนไปก่อนหน้า">‹</button>
+            <button type="button" data-action="move-right" ${index === names.length - 1 ? "disabled" : ""} aria-label="เลื่อนไปถัดไป">›</button>
+            <button type="button" data-action="remove" aria-label="ลบปลายทาง">×</button>
+          </div>
+        ` : ""}
       </div>
       <div class="destination-items"></div>
       <p class="status-note">${isHubDestination(destination) ? "STAGED_IN_HUB" : "ASSIGNED"}</p>
     `;
-    card.querySelector('[data-action="move-left"]').addEventListener("click", event => {
+    card.querySelector('[data-action="move-left"]')?.addEventListener("click", event => {
       event.stopPropagation();
       moveDestination(truck.id, index, -1);
     });
-    card.querySelector('[data-action="move-right"]').addEventListener("click", event => {
+    card.querySelector('[data-action="move-right"]')?.addEventListener("click", event => {
       event.stopPropagation();
       moveDestination(truck.id, index, 1);
     });
-    card.querySelector('[data-action="remove"]').addEventListener("click", event => {
+    card.querySelector('[data-action="remove"]')?.addEventListener("click", event => {
       event.stopPropagation();
       removeDestination(truck.id, destination);
     });
     addDestinationDropHandlers(card, truck.id, destination);
     const items = card.querySelector(".destination-items");
     allocations.forEach(allocation => {
-      const isMovedFromHub = allocation.status === "MOVED_FROM_HUB";
-      const line = document.createElement("div");
-      line.className = "allocation-line";
-      line.dataset.routeOrderIds = allocation.order.id;
-      if (isMovedFromHub) line.classList.add("is-muted");
-      if (elementHasRouteOrder(line)) line.classList.add("is-route-highlight");
-      if (selectedAllocationItems.has(allocation.id)) line.classList.add("is-selected");
-      line.draggable = isHubDestination(allocation.destination) && !isMovedFromHub;
-      if (isHubDestination(allocation.destination) && !isMovedFromHub) {
-        line.addEventListener("click", event => {
-          if (event.target.closest("button")) return;
-          if (selectedAllocationItems.has(allocation.id)) {
-            selectedAllocationItems.delete(allocation.id);
-          } else {
-            selectedAllocationItems.add(allocation.id);
-          }
-          render();
-        });
-        line.addEventListener("dragstart", event => {
-          const allocationIds = selectedAllocationItems.has(allocation.id)
-            ? allocationSelectionIdsForDestination(allocation.destination, allocation.id)
-            : [allocation.id];
-          dragged = allocationIds.length > 1
-            ? { allocationIds, fromHub: true }
-            : { allocationId: allocation.id, fromHub: true };
-          event.dataTransfer.setData("text/plain", allocationIds.join(","));
-          event.dataTransfer.effectAllowed = "move";
-        });
-        line.addEventListener("dragend", () => {
-          dragged = null;
-        });
-      }
-      line.innerHTML = `
-        <div>
-          <strong>${allocation.order.product}</strong>
-          <span>${allocation.order.code}</span>
-          <b>${allocation.qty.toLocaleString()} แพ็ก</b>
-        </div>
-        <div class="allocation-actions">
-          ${isHubDestination(allocation.destination) && !isMovedFromHub ? '<button type="button" data-action="load" aria-label="โหลดขึ้นรถ">→</button>' : ""}
-          ${!isMovedFromHub ? '<button type="button" data-action="undo" aria-label="Undo">↩</button>' : ""}
-        </div>
-      `;
-      line.querySelector('[data-action="undo"]')?.addEventListener("click", () => undoAllocation(allocation.id));
-      line.querySelector('[data-action="load"]')?.addEventListener("click", () => {
-        const allocationIds = allocationSelectionIdsForDestination(allocation.destination, allocation.id);
-        if (allocationIds.length > 1) loadManyFromHubToTruck(allocationIds);
-        else loadFromHubToTruck(allocation.id);
-      });
-      items.append(line);
+      items.append(allocationLine(allocation));
     });
     if (!allocations.length) {
       const empty = document.createElement("div");
@@ -1270,10 +2177,187 @@ function destinationList(truck) {
       }
       node.append(hubBranch);
     }
-    destinations.append(node);
+    return node;
   });
+}
 
-  return destinations;
+function allocationLine(allocation, options = {}) {
+  const isMovedFromHub = allocation.status === "MOVED_FROM_HUB";
+  const line = document.createElement("div");
+  line.className = "allocation-line";
+  line.dataset.routeOrderIds = allocation.order.id;
+  if (isMovedFromHub || options.muted) line.classList.add("is-muted");
+  if (elementHasRouteOrder(line)) line.classList.add("is-route-highlight");
+  if (selectedAllocationItems.has(allocation.id)) line.classList.add("is-selected");
+  line.draggable = Boolean(options.pickupStopId) || (!options.readonly && isHubDestination(allocation.destination) && !isMovedFromHub);
+  if (options.pickupStopId) {
+    line.classList.add("is-pick-draggable");
+    const selectionKey = routePickupKey(allocation.id, options.pickupStopId);
+    if (selectedRoutePickups.has(selectionKey)) {
+      line.classList.add("is-selected");
+    }
+    line.addEventListener("click", event => {
+      if (event.target.closest("button")) return;
+      event.stopPropagation();
+      if (selectedRoutePickups.has(selectionKey)) {
+        selectedRoutePickups.delete(selectionKey);
+      } else {
+        clearActionSelections("route-pickup");
+        const hasOtherStopSelection = [...selectedRoutePickups]
+          .some(key => parseRoutePickupKey(key).fromStopId !== options.pickupStopId);
+        if (hasOtherStopSelection) clearRoutePickupSelection();
+        selectedRoutePickups.add(selectionKey);
+      }
+      render();
+    });
+    line.addEventListener("dragstart", event => {
+      if (!selectedRoutePickups.has(selectionKey)) {
+        clearActionSelections("route-pickup");
+        selectedRoutePickups.add(selectionKey);
+      } else {
+        clearActionSelections("route-pickup");
+        selectedRoutePickups.add(selectionKey);
+      }
+      const allocationIds = selectedPickupIdsForStop(options.pickupStopId, allocation.id);
+      dragged = {
+        allocationIds,
+        allocationId: allocation.id,
+        fromRouteStopId: options.pickupStopId,
+        routeSplit: true
+      };
+      event.dataTransfer.setData("text/plain", allocationIds.join(","));
+      event.dataTransfer.effectAllowed = "move";
+    });
+    line.addEventListener("dragend", () => {
+      dragged = null;
+    });
+  }
+  if (options.dropStopId) {
+    line.classList.add("is-drop-draggable");
+    const dropSelectionKey = routeDropKey(allocation.id, options.dropStopId);
+    if (selectedRouteDrops.has(dropSelectionKey)) {
+      line.classList.add("is-selected");
+    }
+    line.draggable = true;
+    line.addEventListener("click", event => {
+      if (event.target.closest("button")) return;
+      event.stopPropagation();
+      if (selectedRouteDrops.has(dropSelectionKey)) {
+        selectedRouteDrops.delete(dropSelectionKey);
+      } else {
+        clearActionSelections("route-drop");
+        const hasOtherStopSelection = [...selectedRouteDrops]
+          .some(key => parseRouteDropKey(key).fromStopId !== options.dropStopId);
+        if (hasOtherStopSelection) clearRouteDropSelection();
+        selectedRouteDrops.add(dropSelectionKey);
+      }
+      render();
+    });
+    line.addEventListener("dragstart", event => {
+      if (!selectedRouteDrops.has(dropSelectionKey)) {
+        clearActionSelections("route-drop");
+        selectedRouteDrops.add(dropSelectionKey);
+      } else {
+        clearActionSelections("route-drop");
+        selectedRouteDrops.add(dropSelectionKey);
+      }
+      const allocationIds = selectedDropIdsForStop(options.dropStopId, allocation.id);
+      dragged = {
+        allocationId: allocation.id,
+        allocationIds,
+        fromRouteStopId: options.dropStopId,
+        dropToHub: true
+      };
+      event.dataTransfer.setData("text/plain", allocationIds.join(","));
+      event.dataTransfer.effectAllowed = "move";
+    });
+    line.addEventListener("dragend", () => {
+      dragged = null;
+    });
+  }
+  if (options.hubOutbound) {
+    line.classList.add("is-hub-outbound-draggable");
+    if (selectedHubOutboundItems.has(allocation.id)) {
+      line.classList.add("is-selected");
+    }
+    line.draggable = true;
+    line.addEventListener("click", event => {
+      if (event.target.closest("button")) return;
+      event.stopPropagation();
+      if (selectedHubOutboundItems.has(allocation.id)) {
+        selectedHubOutboundItems.delete(allocation.id);
+      } else {
+        clearActionSelections("hub-outbound");
+        selectedHubOutboundItems.add(allocation.id);
+      }
+      render();
+    });
+    line.addEventListener("dragstart", event => {
+      if (!selectedHubOutboundItems.has(allocation.id)) {
+        clearActionSelections("hub-outbound");
+        selectedHubOutboundItems.add(allocation.id);
+      } else {
+        clearActionSelections("hub-outbound");
+        selectedHubOutboundItems.add(allocation.id);
+      }
+      const allocationIds = selectedHubOutboundIds(allocation.id);
+      dragged = {
+        allocationId: allocation.id,
+        allocationIds,
+        fromHubOutbound: true
+      };
+      event.dataTransfer.setData("text/plain", allocationIds.join(","));
+      event.dataTransfer.effectAllowed = "move";
+    });
+    line.addEventListener("dragend", () => {
+      dragged = null;
+    });
+  }
+  if (!options.readonly && isHubDestination(allocation.destination) && !isMovedFromHub) {
+    line.addEventListener("click", event => {
+      if (event.target.closest("button")) return;
+      if (selectedAllocationItems.has(allocation.id)) {
+        selectedAllocationItems.delete(allocation.id);
+      } else {
+        clearActionSelections("hub-inbound");
+        selectedAllocationItems.add(allocation.id);
+      }
+      render();
+    });
+    line.addEventListener("dragstart", event => {
+      const allocationIds = selectedAllocationItems.has(allocation.id)
+        ? allocationSelectionIdsForDestination(allocation.destination, allocation.id)
+        : [allocation.id];
+      dragged = allocationIds.length > 1
+        ? { allocationIds, fromHub: true }
+        : { allocationId: allocation.id, fromHub: true };
+      event.dataTransfer.setData("text/plain", allocationIds.join(","));
+      event.dataTransfer.effectAllowed = "move";
+    });
+    line.addEventListener("dragend", () => {
+      dragged = null;
+    });
+  }
+  line.innerHTML = `
+    <div>
+      <strong>${allocation.order.product}</strong>
+      <span>${allocation.order.code}</span>
+      <b>${allocation.qty.toLocaleString()} แพ็ก</b>
+    </div>
+    ${options.readonly || options.hideActions ? "" : `
+      <div class="allocation-actions">
+        ${isHubDestination(allocation.destination) && !isMovedFromHub ? '<button type="button" data-action="load" aria-label="โหลดขึ้นรถ">→</button>' : ""}
+        ${!isMovedFromHub ? '<button type="button" data-action="undo" aria-label="Undo">↩</button>' : ""}
+      </div>
+    `}
+  `;
+  line.querySelector('[data-action="undo"]')?.addEventListener("click", () => undoAllocation(allocation.id));
+  line.querySelector('[data-action="load"]')?.addEventListener("click", () => {
+    const allocationIds = allocationSelectionIdsForDestination(allocation.destination, allocation.id);
+    if (allocationIds.length > 1) loadManyFromHubToTruck(allocationIds);
+    else loadFromHubToTruck(allocation.id);
+  });
+  return line;
 }
 
 function sameTruckContinuation(truck, downstreamDestinations = []) {
@@ -1374,7 +2458,7 @@ function drawConnectors() {
     const options = directChildren(flow, ".destination-options")[0];
     const destinationNodes = destinations ? directChildren(destinations, ".destination-node") : [];
     const destinationCards = destinationNodes
-      .map(node => directChildren(node, ".destination-card, .hub-card")[0])
+      .map(node => directChildren(node, ".pickup-card, .destination-card, .hub-card")[0])
       .filter(Boolean);
 
     if (destinationCards.length) {
@@ -1482,6 +2566,7 @@ function toCard(order, qty, options = {}) {
         if (selectedSourceItems.has(order.id)) {
           selectedSourceItems.delete(order.id);
         } else {
+          clearActionSelections("source");
           selectedSourceItems.add(order.id);
         }
         render();
@@ -1492,6 +2577,7 @@ function toCard(order, qty, options = {}) {
         if (selectedTruckItems.has(key)) {
           selectedTruckItems.delete(key);
         } else {
+          clearActionSelections("truck");
           selectedTruckItems.add(key);
         }
         selectedTruckItem = selectedTruckItems.size === 1 ? { truckId: options.truckId, orderId: order.id } : null;
@@ -1507,10 +2593,16 @@ function toCard(order, qty, options = {}) {
     });
     node.addEventListener("dragstart", event => {
       if (options.sourceSelectable) {
+        clearActionSelections("source");
+        selectedSourceItems.add(order.id);
         const selectedIds = selectedSourceItems.has(order.id) ? [...selectedSourceItems] : [order.id];
         dragged = { orderIds: selectedIds, fromTruckId: null };
         event.dataTransfer.setData("text/plain", selectedIds.join(","));
       } else {
+        if (options.truckId) {
+          clearActionSelections("truck");
+          selectedTruckItems.add(truckSelectionKey(options.truckId, order.id));
+        }
         const selectedIds = options.truckId ? selectedOrderIdsForTruck(options.truckId, order.id) : [order.id];
         dragged = selectedIds.length > 1
           ? { orderIds: selectedIds, fromTruckId: options.truckId || null }
@@ -1543,6 +2635,11 @@ function renderZoom() {
 
 function addDropHandlers(card, truckId) {
   card.addEventListener("dragover", event => {
+    if (dragged?.fromHubOutbound) {
+      event.preventDefault();
+      card.classList.add("is-over");
+      return;
+    }
     event.preventDefault();
     card.classList.add("is-over");
   });
@@ -1551,24 +2648,25 @@ function addDropHandlers(card, truckId) {
     event.preventDefault();
     card.classList.remove("is-over");
     if (!dragged || dragged.fromTruckId === truckId) return;
+    if (dragged.fromHubOutbound) {
+      loadHubOutboundToTruck(dragged.allocationIds || [dragged.allocationId], truckId);
+      return;
+    }
     if (dragged.fromHub) {
       if (dragged.allocationIds?.length) loadManyFromHubToTruck(dragged.allocationIds, truckId);
       else loadFromHubToTruck(dragged.allocationId, truckId);
       return;
     }
     if (dragged.orderIds?.length) {
-      if (dragged.orderIds.length === 1) {
-        openTruckLoadModal(truckId, dragged.orderIds[0]);
-        return;
-      }
       addManyToTruck(truckId, dragged.orderIds);
       return;
     }
+    if (!dragged.orderId) return;
     const order = orderById(dragged.orderId);
     const available = dragged.fromTruckId ? qtyInTruck(order, dragged.fromTruckId) : unassignedQty(order);
     if (available <= 0) return;
     if (dragged.fromTruckId) moveBetweenTrucks(dragged.fromTruckId, truckId, dragged.orderId, available);
-    else openTruckLoadModal(truckId, dragged.orderId);
+    else addToTruck(truckId, dragged.orderId, available);
   });
 }
 
@@ -1691,6 +2789,22 @@ function groupAllocations(allocations) {
   }, {});
 }
 
+function groupAllocationsByOrigin(allocations) {
+  return allocations.reduce((groups, allocation) => {
+    groups[allocation.order.origin] ||= [];
+    groups[allocation.order.origin].push(allocation);
+    return groups;
+  }, {});
+}
+
+function groupAllocationsByCustomer(allocations) {
+  return allocations.reduce((groups, allocation) => {
+    groups[allocation.order.customer] ||= [];
+    groups[allocation.order.customer].push(allocation);
+    return groups;
+  }, {});
+}
+
 els.addTruckButton?.addEventListener("click", () => {
   const truck = createTruck("Dummy", "");
   state.nextTruck += 1;
@@ -1699,6 +2813,13 @@ els.addTruckButton?.addEventListener("click", () => {
 });
 
 els.addTOButton?.addEventListener("click", openTOSelector);
+els.addHubButton?.addEventListener("click", openHubSelector);
+els.hubPickerSearch?.addEventListener("input", event => {
+  hubPickerSearchText = event.target.value;
+  renderHubSelector();
+});
+els.cancelHubPickerButton?.addEventListener("click", () => els.hubPickerDialog?.close());
+els.closeHubPickerButton?.addEventListener("click", () => els.hubPickerDialog?.close());
 els.toggleTOPanelButton?.addEventListener("click", () => {
   selectedTOCollapsed = !selectedTOCollapsed;
   renderSelectedTOs();
@@ -1718,6 +2839,10 @@ els.resetButton.addEventListener("click", () => {
   selectedTruckItems.clear();
   selectedSourceItems.clear();
   selectedAllocationItems.clear();
+  clearRoutePickupSelection();
+  clearRouteDropSelection();
+  clearHubOutboundSelection();
+  activeHubId = null;
   draftTOSelection.clear();
   expandedTOSelection.clear();
   selectedTOCollapsed = false;
