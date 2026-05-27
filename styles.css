@@ -1644,6 +1644,10 @@ button:hover {
   font-size: 12px;
 }
 
+.modal-body label[hidden] {
+  display: none;
+}
+
 .selected-order {
   padding: 10px;
   border: 1px solid var(--line);

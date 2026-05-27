@@ -2277,10 +2277,18 @@ function removeAllocationFromInboundStops(truck, allocationId) {
   });
 }
 
+function removeAllocationFromStopsByType(truck, allocationId, type) {
+  (truck.routeStops || []).forEach(stop => {
+    if (stop.type === type) {
+      stop.allocationIds = stop.allocationIds.filter(id => id !== allocationId);
+    }
+  });
+}
+
 function addReturnedTransferToRoute(truck, sourceAllocationId, returnedAllocationId, customer) {
   truck.routeStops ||= [];
   (truck.routeStops || []).forEach(stop => {
-    if ((stop.type === "PICK" || stop.type === "OUTBOUND") && stop.allocationIds.includes(sourceAllocationId)) {
+    if (stop.type === "PICK" && stop.allocationIds.includes(sourceAllocationId)) {
       addAllocationToStop(stop, returnedAllocationId);
     }
   });
@@ -2295,6 +2303,15 @@ function addReturnedTransferToRoute(truck, sourceAllocationId, returnedAllocatio
     truck.routeStops.splice(sourceIndex >= 0 ? sourceIndex + 1 : truck.routeStops.length, 0, drop);
   }
   addAllocationToStop(drop, returnedAllocationId);
+}
+
+function findReturnTargetAllocation(found, sourceAllocationId) {
+  return found.order.allocations.find(allocation =>
+    allocation.id !== sourceAllocationId &&
+    allocation.truckId === found.allocation.truckId &&
+    allocation.destination === found.order.customer &&
+    allocation.status === "ASSIGNED"
+  );
 }
 
 function resetTransferFields(allocation, customer) {
@@ -2322,25 +2339,32 @@ function returnTransferAllocationQuantities(allocationIds, qtyById) {
 
     if (isFullMove) {
       removeAllocationFromInboundStops(truck, allocationId);
+      removeAllocationFromStopsByType(truck, allocationId, "OUTBOUND");
       resetTransferFields(found.allocation, found.order.customer);
       addReturnedTransferToRoute(truck, allocationId, allocationId, found.order.customer);
     } else {
       found.allocation.qty -= qty;
-      const returnedAllocation = {
-        ...found.allocation,
-        id: `A-${state.nextAllocation++}`,
-        destination: found.order.customer,
-        status: "ASSIGNED",
-        qty,
-        hubId: null,
-        hubName: null,
-        transferLocationType: null,
-        transferLocationName: null,
-        transferLocationId: null,
-        timestamp: Date.now()
-      };
-      found.order.allocations.push(returnedAllocation);
-      addReturnedTransferToRoute(truck, allocationId, returnedAllocation.id, found.order.customer);
+      const returnTarget = findReturnTargetAllocation(found, allocationId);
+      if (returnTarget) {
+        returnTarget.qty += qty;
+        addReturnedTransferToRoute(truck, allocationId, returnTarget.id, found.order.customer);
+      } else {
+        const returnedAllocation = {
+          ...found.allocation,
+          id: `A-${state.nextAllocation++}`,
+          destination: found.order.customer,
+          status: "ASSIGNED",
+          qty,
+          hubId: null,
+          hubName: null,
+          transferLocationType: null,
+          transferLocationName: null,
+          transferLocationId: null,
+          timestamp: Date.now()
+        };
+        found.order.allocations.push(returnedAllocation);
+        addReturnedTransferToRoute(truck, allocationId, returnedAllocation.id, found.order.customer);
+      }
     }
 
     compactRouteStops(truck);
