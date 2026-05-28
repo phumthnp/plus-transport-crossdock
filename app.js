@@ -98,6 +98,7 @@ let draftTOSelection = new Set();
 let expandedTOSelection = new Set();
 let toPickerSearchText = "";
 let selectedTOCollapsed = false;
+let originModeCollapsed = {};
 let mockTOCounter = 1;
 let zoomLevel = 1;
 let activeOriginLocation = null;
@@ -118,7 +119,7 @@ const els = {
   zoomInButton: document.querySelector("#zoomInButton"),
   zoomLabel: document.querySelector("#zoomLabel"),
   addTruckButton: document.querySelector("#addTruckButton"),
-  resetButton: document.querySelector("#resetButton"),
+  resetPlanButton: document.querySelector("#resetPlanButton"),
   template: document.querySelector("#toCardTemplate"),
   dialog: document.querySelector("#allocationDialog"),
   allocationForm: document.querySelector("#allocationForm"),
@@ -1305,12 +1306,15 @@ function selectionState(orderIds) {
   };
 }
 
-function sourceHeader(label, orderIds, className = "") {
+function sourceHeader(label, orderIds, className = "", options = {}) {
   const header = document.createElement("label");
   header.className = `source-select ${className}`.trim();
+  if (options.collapsible) header.classList.add("is-collapsible");
+  if (options.collapsed) header.classList.add("is-collapsed");
   header.innerHTML = `
     <input type="checkbox">
     <span>${label}</span>
+    ${options.collapsible ? '<button type="button" class="section-toggle" aria-label="ย่อขยายรายการ">⌃</button>' : ""}
   `;
   const checkbox = header.querySelector("input");
   const state = selectionState(orderIds);
@@ -1319,6 +1323,11 @@ function sourceHeader(label, orderIds, className = "") {
   checkbox.disabled = state.disabled;
   checkbox.addEventListener("change", event => {
     setSourceSelection(orderIds, event.target.checked);
+  });
+  header.querySelector(".section-toggle")?.addEventListener("click", event => {
+    event.preventDefault();
+    event.stopPropagation();
+    options.onToggle?.();
   });
   return header;
 }
@@ -1366,12 +1375,15 @@ function routeCustomerHeader(label, allocations, context, stopId = null) {
   return header;
 }
 
-function allocationSectionHeader(label, allocations, context, className = "") {
+function allocationSectionHeader(label, allocations, context, className = "", options = {}) {
   const header = document.createElement("label");
   header.className = `source-select origin-mode-select ${className}`.trim();
+  if (options.collapsible) header.classList.add("is-collapsible");
+  if (options.collapsed) header.classList.add("is-collapsed");
   header.innerHTML = `
     <input type="checkbox">
     <span>${label}</span>
+    ${options.collapsible ? '<button type="button" class="section-toggle" aria-label="ย่อขยายรายการ">⌃</button>' : ""}
   `;
   const selectable = allocations.filter(allocation => allocation.status !== "MOVED_FROM_HUB");
   const store = routeSelectionStore(context);
@@ -1389,6 +1401,11 @@ function allocationSectionHeader(label, allocations, context, className = "") {
       else store.delete(key);
     });
     render();
+  });
+  header.querySelector(".section-toggle")?.addEventListener("click", event => {
+    event.preventDefault();
+    event.stopPropagation();
+    options.onToggle?.();
   });
   return header;
 }
@@ -1678,6 +1695,9 @@ function renderSelectedTOs() {
 }
 
 function renderOrigins() {
+  const validOrigins = new Set(Object.keys(groupBy(state.orders, "origin")));
+  originModeCollapsed = Object.fromEntries(Object.entries(originModeCollapsed)
+    .filter(([key]) => validOrigins.has(key.split("|")[0])));
   selectedSourceItems = new Set([...selectedSourceItems].filter(orderId => {
     const order = orderById(orderId);
     return order && unassignedQty(order) > 0;
@@ -1938,10 +1958,24 @@ function renderOriginDetail(orders) {
 
   const stack = document.createElement("div");
   stack.className = "origin-detail-stack";
+  const pickCollapseKey = `${activeOriginLocation}|PICK`;
+  const outboundCollapseKey = `${activeOriginLocation}|OUTBOUND`;
+  const pickCollapsed = Boolean(originModeCollapsed[pickCollapseKey]);
+  const outboundCollapsed = Boolean(originModeCollapsed[outboundCollapseKey]);
   const pickSection = document.createElement("section");
   pickSection.className = "origin-mode-section origin-pick-section";
-  pickSection.append(sourceHeader("PICK", availableIds, "origin-mode-select origin-pick-select"));
+  if (pickCollapsed) pickSection.classList.add("is-collapsed");
+  pickSection.append(sourceHeader("PICK", availableIds, "origin-mode-select origin-pick-select", {
+    collapsible: true,
+    collapsed: pickCollapsed,
+    onToggle: () => {
+      originModeCollapsed[pickCollapseKey] = !originModeCollapsed[pickCollapseKey];
+      render();
+    }
+  }));
   const customerGroups = groupBy(orders, "customer");
+  const pickBody = document.createElement("div");
+  pickBody.className = "origin-mode-body";
   Object.entries(customerGroups).forEach(([customer, customerOrders]) => {
     const customerSection = document.createElement("section");
     customerSection.className = "customer-subtab";
@@ -1954,16 +1988,25 @@ function renderOriginDetail(orders) {
       sourceSelectable: true
     })));
     customerSection.append(customerStack);
-    pickSection.append(customerSection);
+    pickBody.append(customerSection);
   });
+  pickSection.append(pickBody);
   stack.append(pickSection);
   const transferAllocations = originTransferAllocations(activeOriginLocation);
   if (transferAllocations.length) {
     const outboundSection = document.createElement("section");
     outboundSection.className = "origin-mode-section origin-outbound-section";
-    outboundSection.append(allocationSectionHeader("OUTBOUND", transferAllocations, "location-outbound", "origin-outbound-select"));
+    if (outboundCollapsed) outboundSection.classList.add("is-collapsed");
+    outboundSection.append(allocationSectionHeader("OUTBOUND", transferAllocations, "location-outbound", "origin-outbound-select", {
+      collapsible: true,
+      collapsed: outboundCollapsed,
+      onToggle: () => {
+        originModeCollapsed[outboundCollapseKey] = !originModeCollapsed[outboundCollapseKey];
+        render();
+      }
+    }));
     const outboundStack = document.createElement("div");
-    outboundStack.className = "to-stack";
+    outboundStack.className = "to-stack origin-mode-body";
     Object.entries(groupAllocationsByCustomer(transferAllocations)).forEach(([customer, allocations]) => {
       outboundStack.append(routeCustomerHeader(customer, allocations, "location-outbound"));
       allocations.forEach(allocation => outboundStack.append(allocationLine(allocation, {
@@ -2146,7 +2189,7 @@ function routeList(truck) {
     addRouteStopReorderHandlers(routes, truck);
     truck.routeStops.forEach((stop, index) => {
       routes.append(routeReorderMarker(index));
-      routes.append(routeStopNode(truck, stop));
+      routes.append(routeStopNode(truck, stop, index));
     });
     routes.append(routeReorderMarker(truck.routeStops.length));
     return routes;
@@ -2862,7 +2905,7 @@ function openRouteAllocationTransferModal(sourceTruckId, targetTruckId, allocati
 }
 
 
-function routeStopNode(truck, stop) {
+function routeStopNode(truck, stop, index = 0) {
   const allocations = stop.allocationIds
     .map(allocationById)
     .filter(Boolean)
@@ -2884,6 +2927,7 @@ function routeStopNode(truck, stop) {
   if (elementHasRouteOrder(card)) card.classList.add("is-route-highlight");
   card.innerHTML = `
     <div class="destination-head" draggable="true">
+      <span class="stop-step">${String(index + 1).padStart(2, "0")}</span>
       ${stopHeading(stop, allocations)}
     </div>
     <div class="destination-items"></div>
@@ -3810,7 +3854,9 @@ els.confirmPlanSummaryButton?.addEventListener("click", () => {
   alert("ยืนยันแผนจัดส่งแล้ว");
 });
 
-els.resetButton.addEventListener("click", () => {
+els.resetPlanButton?.addEventListener("click", () => {
+  const confirmed = confirm("ต้องการรีเซ็ตแผนจัดส่งทั้งหมดใช่ไหม? ข้อมูลการจัดรถและการย้ายสินค้าที่ทำไว้จะถูกล้าง");
+  if (!confirmed) return;
   state = createInitialState();
   selectedTruckItem = null;
   selectedTruckItems.clear();
@@ -3823,6 +3869,7 @@ els.resetButton.addEventListener("click", () => {
   draftTOSelection.clear();
   expandedTOSelection.clear();
   selectedTOCollapsed = false;
+  originModeCollapsed = {};
   mockTOCounter = 1;
   render();
 });

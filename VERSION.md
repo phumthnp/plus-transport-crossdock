@@ -1,6 +1,6 @@
 # Plus Transport Crossdock POC
 
-Current milestone: `v0.3.2-poc`
+Current milestone: `v0.3.3-poc`
 
 ## Scope
 
@@ -15,6 +15,7 @@ Current milestone: `v0.3.2-poc`
 - Transfer inbound/outbound through HUB and origin locations
 - Pending/complete tracking for delivery and transfer points
 - Cross-drop multi-select transfer into HUB/origin transfer points
+- UI foundation pass with design tokens, modern card styling, and clearer route stop steps
 
 ## Status
 

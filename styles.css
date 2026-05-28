@@ -80,6 +80,12 @@ button:hover {
   border-bottom: 1px solid var(--line);
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .topbar h1,
 .panel h2,
 .stage-head h2,
@@ -647,6 +653,10 @@ button:hover {
   border-top: 1px solid var(--strong-line);
 }
 
+.origin-mode-section:first-child {
+  border-top: 0;
+}
+
 .origin-mode-section + .origin-mode-section {
   margin-top: 10px;
 }
@@ -689,6 +699,26 @@ button:hover {
   cursor: default;
 }
 
+.source-select .section-toggle {
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.source-select.is-collapsed .section-toggle {
+  transform: rotate(180deg);
+}
+
+.origin-mode-section.is-collapsed .origin-mode-body {
+  display: none;
+}
+
 .source-select.customer-select {
   margin: 0;
   color: var(--ink);
@@ -710,12 +740,6 @@ button:hover {
   border-bottom: 1px solid var(--line);
   font-size: 16px;
   font-weight: 700;
-}
-
-.source-select.origin-mode-select::after {
-  content: "^";
-  margin-left: auto;
-  font-size: 13px;
 }
 
 .origin-name {
@@ -1912,4 +1936,312 @@ button:hover {
 .modal-actions {
   justify-content: flex-end;
   border-top: 1px solid var(--line);
+}
+
+/* UI foundation pass: tokenized modern planning board */
+:root {
+  --page: #f8fafc;
+  --surface: #ffffff;
+  --surface-muted: #f1f5f9;
+  --surface-soft: #f8fafc;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #d9e1ea;
+  --strong-line: #94a3b8;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --success: #16a34a;
+  --success-soft: #dcfce7;
+  --warning: #b45309;
+  --warning-soft: #ffedd5;
+  --pick: #e0e7ff;
+  --drop: #fef3c7;
+  --inbound: #d1fae5;
+  --hub: #e0f2fe;
+  --danger: #dc2626;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow: 0 16px 40px rgba(15, 23, 42, .08);
+  --shadow-sm: 0 6px 18px rgba(15, 23, 42, .06);
+}
+
+body {
+  background:
+    linear-gradient(180deg, #ffffff 0, #f8fafc 180px),
+    var(--page);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, "Helvetica Neue", sans-serif;
+}
+
+button {
+  height: 36px;
+  border-color: #cbd5e1;
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+  font-weight: 700;
+}
+
+.ghost,
+.text-action,
+.icon-button {
+  background: #fff;
+  color: var(--ink);
+}
+
+.topbar {
+  height: 84px;
+  padding: 0 24px;
+  border-bottom-color: var(--line);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, .03);
+}
+
+.topbar h1 {
+  font-size: 20px;
+}
+
+.version-badge {
+  border-color: #d6dee8;
+  background: #f8fafc;
+}
+
+.board {
+  height: calc(100vh - 84px);
+  min-height: calc(100vh - 84px);
+}
+
+.panel,
+.source-rail,
+.to-selection-panel,
+.origin-section-head,
+.hub-panel,
+.delivery-panel {
+  border-color: var(--line);
+}
+
+.source-panel {
+  background: #eaf6ff;
+}
+
+.origin-detail-panel {
+  background: #dff2ff;
+}
+
+.panel-head,
+.stage-head {
+  padding: 18px 20px;
+  border-color: var(--line);
+}
+
+.planning-stage {
+  background: var(--page);
+}
+
+.stage-head {
+  background: rgba(255, 255, 255, .92);
+  backdrop-filter: blur(8px);
+}
+
+.canvas-viewport {
+  background:
+    radial-gradient(circle at 24px 24px, rgba(148, 163, 184, .18) 1px, transparent 1px) 0 0 / 28px 28px,
+    var(--page);
+}
+
+.stage-actions {
+  border-color: #d6dee8;
+  border-radius: var(--radius-md);
+}
+
+.truck-canvas {
+  padding: 84px 28px 32px;
+}
+
+.truck-row {
+  grid-template-columns: 270px auto;
+  min-height: 206px;
+  margin-bottom: 44px;
+  border: 1px solid #cbd5e1;
+  border-radius: var(--radius-lg);
+  background: #fff;
+  box-shadow: var(--shadow);
+  overflow: visible;
+}
+
+.truck-card {
+  min-height: 206px;
+  border-right-color: #cbd5e1;
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+}
+
+.truck-head,
+.destination-head {
+  border-bottom-color: #cbd5e1;
+}
+
+.truck-controls input,
+.truck-controls select,
+.modal-body select,
+.modal-body input {
+  border-color: #cbd5e1;
+  border-radius: var(--radius-sm);
+}
+
+.truck-meta {
+  color: var(--muted);
+}
+
+.flow-area {
+  min-height: 206px;
+  padding: 16px;
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+  background: #fff;
+}
+
+.destinations {
+  align-items: stretch;
+}
+
+.route-reorder-marker {
+  width: 18px;
+  flex: 0 0 18px;
+}
+
+.route-reorder-marker.is-active {
+  width: 46px;
+  flex-basis: 46px;
+}
+
+.route-reorder-marker.is-active::before {
+  border-left-color: var(--accent);
+  border-left-width: 4px;
+  border-radius: 999px;
+}
+
+.destination-node {
+  gap: 18px;
+}
+
+.pickup-card,
+.destination-card,
+.hub-card {
+  width: 286px;
+  min-height: 166px;
+  padding: 14px;
+  border-color: #cbd5e1;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.pickup-card {
+  background: var(--pick);
+}
+
+.drop-card {
+  background: var(--drop);
+}
+
+.destination-card.inbound-card {
+  background: var(--inbound);
+}
+
+.hub-card {
+  background: var(--hub);
+}
+
+.destination-head {
+  position: relative;
+  gap: 10px;
+  padding: 0 0 12px 42px;
+}
+
+.stop-step {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .86);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, .22);
+}
+
+.stop-title-tags span {
+  min-height: 20px;
+  border: 1px solid rgba(15, 23, 42, .38);
+  background: rgba(255, 255, 255, .82);
+  font-size: 11px;
+}
+
+.truck-head h3,
+.destination-head h3 {
+  font-size: 15px;
+}
+
+.allocation-line,
+.to-card {
+  border-color: #cbd5e1;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, .04);
+}
+
+.allocation-line:hover,
+.to-card:hover {
+  border-color: #93a4ba;
+}
+
+.allocation-line.is-selected,
+.to-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
+}
+
+.allocation-line.is-muted,
+.to-card.is-muted {
+  opacity: .34;
+}
+
+.origin-list button,
+.hub-list button,
+.delivery-list button,
+.selected-to-card {
+  border-color: #cbd5e1;
+  border-radius: var(--radius-sm);
+}
+
+.origin-list button.is-active,
+.hub-list button.is-active {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.origin-list button.is-pending,
+.hub-list button.is-pending,
+.delivery-list button.is-pending {
+  background: var(--warning-soft);
+}
+
+.origin-list button.is-complete,
+.hub-list button.is-complete,
+.delivery-list button.is-complete {
+  background: var(--success-soft);
+}
+
+.origin-mode-section {
+  border-top-color: #b8c7d8;
+}
+
+.source-select.origin-mode-select {
+  border-bottom-color: #b8c7d8;
+}
+
+.plan-summary-content {
+  background:
+    radial-gradient(circle at 24px 24px, rgba(255, 255, 255, .06) 1px, transparent 1px) 0 0 / 32px 32px,
+    #0f172a;
 }
