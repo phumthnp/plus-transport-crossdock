@@ -215,8 +215,7 @@ button:hover {
   display: grid;
   gap: 8px;
   margin-top: 12px;
-  max-height: 204px;
-  overflow: auto;
+  overflow: visible;
 }
 
 .to-selection-panel.is-collapsed {
@@ -310,6 +309,10 @@ button:hover {
 }
 
 .origin-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   padding: 18px 16px 0;
   border-top: 1px solid var(--strong-line);
 }

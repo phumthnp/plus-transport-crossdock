@@ -403,7 +403,89 @@ function ensureHubOutboundRouteStops(truck, allocation, order, hubName) {
 }
 
 function compactRouteStops(truck) {
-  truck.routeStops = (truck.routeStops || []).filter(stop => stop.allocationIds.some(allocationId => allocationById(allocationId)));
+  truck.routeStops = (truck.routeStops || [])
+    .map(stop => ({
+      ...stop,
+      allocationIds: stop.allocationIds.filter(allocationId => {
+        const found = allocationById(allocationId);
+        return found && found.allocation.truckId === truck.id && found.allocation.status !== "MOVED_FROM_HUB";
+      })
+    }))
+    .filter(stop => stop.allocationIds.length > 0);
+}
+
+function cleanupTruckPlanState(truck) {
+  if (!truck) return;
+  compactRouteStops(truck);
+  truck.itemIds = (truck.itemIds || []).filter(orderId => {
+    const order = orderById(orderId);
+    return order?.allocations.some(allocation =>
+      allocation.truckId === truck.id &&
+      allocation.qty > 0 &&
+      allocation.status !== "MOVED_FROM_HUB"
+    );
+  });
+  truck.destinations = (truck.destinations || []).filter(destination =>
+    state.orders.some(order =>
+      order.allocations.some(allocation =>
+        allocation.truckId === truck.id &&
+        allocation.destination === destination &&
+        allocation.qty > 0 &&
+        allocation.status !== "MOVED_FROM_HUB"
+      )
+    )
+  );
+  syncTruckOrigins(truck);
+}
+
+function sameRouteAllocationShape(left, right) {
+  return left.destination === right.destination &&
+    left.status === right.status &&
+    Boolean(left.autoRoute) === Boolean(right.autoRoute) &&
+    (left.sourceTransferType || null) === (right.sourceTransferType || null) &&
+    (left.sourceTransferName || null) === (right.sourceTransferName || null) &&
+    (left.sourceHubId || null) === (right.sourceHubId || null) &&
+    (left.sourceHubName || null) === (right.sourceHubName || null) &&
+    (left.transferLocationType || null) === (right.transferLocationType || null) &&
+    (left.transferLocationName || null) === (right.transferLocationName || null) &&
+    (left.hubId || null) === (right.hubId || null) &&
+    (left.hubName || null) === (right.hubName || null);
+}
+
+function findMergeTargetAllocation(order, candidate, targetTruckId, exceptId = null) {
+  return order.allocations.find(allocation =>
+    allocation.id !== exceptId &&
+    allocation.truckId === targetTruckId &&
+    allocation.status !== "MOVED_FROM_HUB" &&
+    sameRouteAllocationShape(allocation, candidate)
+  );
+}
+
+function replaceAllocationIdInStops(truck, fromId, toId) {
+  (truck?.routeStops || []).forEach(stop => {
+    if (!stop.allocationIds.includes(fromId)) return;
+    stop.allocationIds = stop.allocationIds.filter(id => id !== fromId);
+    addAllocationToStop(stop, toId);
+  });
+}
+
+function removeAllocationRecord(order, allocationId) {
+  order.allocations = order.allocations.filter(allocation => allocation.id !== allocationId);
+}
+
+function findOriginalTransferAllocation(order, allocation, transferFields) {
+  const sameHub = transferFields.hubId && allocation.sourceHubId && transferFields.hubId === allocation.sourceHubId;
+  const sameOriginTransfer = transferFields.transferLocationName &&
+    allocation.sourceTransferName &&
+    transferFields.transferLocationName === allocation.sourceTransferName;
+  if (!sameHub && !sameOriginTransfer) return null;
+  return order.allocations.find(item =>
+    item.id !== allocation.id &&
+    item.truckId === allocation.truckId &&
+    item.status === "MOVED_FROM_HUB" &&
+    ((sameHub && item.hubId === transferFields.hubId) ||
+      (sameOriginTransfer && item.transferLocationName === transferFields.transferLocationName))
+  );
 }
 
 function routePickupKey(allocationId, fromStopId) {
@@ -708,7 +790,6 @@ function addToTruck(truckId, orderId, qty = unassignedQty(orderById(orderId)), o
   }
 
   const allocation = {
-    id: `A-${state.nextAllocation++}`,
     truckId,
     destination,
     status: shouldAutoRoute ? "ASSIGNED" : "IN_TRUCK",
@@ -716,6 +797,15 @@ function addToTruck(truckId, orderId, qty = unassignedQty(orderById(orderId)), o
     autoRoute: shouldAutoRoute,
     timestamp: Date.now()
   };
+  const mergeTarget = findMergeTargetAllocation(order, allocation, truckId);
+  if (mergeTarget) {
+    mergeTarget.qty += qty;
+    if (shouldAutoRoute) ensureAutoRouteStops(truck, mergeTarget, order);
+    if (!options.skipRender) render();
+    return;
+  }
+
+  allocation.id = `A-${state.nextAllocation++}`;
   order.allocations.push(allocation);
   if (shouldAutoRoute) ensureAutoRouteStops(truck, allocation, order);
 
@@ -959,7 +1049,6 @@ function loadHubOutboundToTruck(allocationIds, targetTruckId) {
     syncTruckOrigins(truck);
 
     const outboundAllocation = {
-      id: `A-${state.nextAllocation++}`,
       truckId: truck.id,
       destination: found.order.customer,
       status: "ASSIGNED",
@@ -971,6 +1060,14 @@ function loadHubOutboundToTruck(allocationIds, targetTruckId) {
       sourceHubName: found.allocation.hubName || null,
       timestamp: Date.now()
     };
+    const mergeTarget = findMergeTargetAllocation(found.order, outboundAllocation, truck.id);
+    if (mergeTarget) {
+      mergeTarget.qty += qty;
+      ensureHubOutboundRouteStops(truck, mergeTarget, found.order, transferName);
+      return;
+    }
+
+    outboundAllocation.id = `A-${state.nextAllocation++}`;
     found.order.allocations.push(outboundAllocation);
     ensureHubOutboundRouteStops(truck, outboundAllocation, found.order, transferName);
   });
@@ -1003,7 +1100,6 @@ function loadHubOutboundQuantitiesToTruck(allocationIds, targetTruckId, qtyById,
     syncTruckOrigins(truck);
 
     const outboundAllocation = {
-      id: `A-${state.nextAllocation++}`,
       truckId: truck.id,
       destination: found.order.customer,
       status: "ASSIGNED",
@@ -1015,6 +1111,14 @@ function loadHubOutboundQuantitiesToTruck(allocationIds, targetTruckId, qtyById,
       sourceHubName: found.allocation.hubName || null,
       timestamp: Date.now()
     };
+    const mergeTarget = findMergeTargetAllocation(found.order, outboundAllocation, truck.id);
+    if (mergeTarget) {
+      mergeTarget.qty += qty;
+      ensureHubOutboundRouteStops(truck, mergeTarget, found.order, transferName);
+      return;
+    }
+
+    outboundAllocation.id = `A-${state.nextAllocation++}`;
     found.order.allocations.push(outboundAllocation);
     ensureHubOutboundRouteStops(truck, outboundAllocation, found.order, transferName);
   });
@@ -1153,14 +1257,20 @@ function loadFromHubToTruck(allocationId, targetTruckId = null, options = {}) {
   if (!truck.itemIds.includes(found.order.id)) truck.itemIds.push(found.order.id);
   ensureOriginSequence(truck, found.order.origin);
   syncTruckOrigins(truck);
-  found.order.allocations.push({
-    id: `A-${state.nextAllocation++}`,
+  const truckAllocation = {
     truckId: truck.id,
     destination: "TRUCK",
     status: "IN_TRUCK",
     qty: found.allocation.qty,
     timestamp: Date.now()
-  });
+  };
+  const mergeTarget = findMergeTargetAllocation(found.order, truckAllocation, truck.id);
+  if (mergeTarget) {
+    mergeTarget.qty += found.allocation.qty;
+  } else {
+    truckAllocation.id = `A-${state.nextAllocation++}`;
+    found.order.allocations.push(truckAllocation);
+  }
 
   selectedAllocationItems.delete(allocationId);
   if (!options.skipRender) render();
@@ -1230,14 +1340,20 @@ function allocatePartial(truckId, destination, orderId, qty, options = {}) {
     syncTruckOrigins(truck);
   }
 
-  order.allocations.push({
-    id: `A-${state.nextAllocation++}`,
+  const allocation = {
     truckId,
     destination,
     status: isHubDestination(destination) ? "STAGED_IN_HUB" : "ASSIGNED",
     qty,
     timestamp: Date.now()
-  });
+  };
+  const mergeTarget = findMergeTargetAllocation(order, allocation, truckId);
+  if (mergeTarget) {
+    mergeTarget.qty += qty;
+  } else {
+    allocation.id = `A-${state.nextAllocation++}`;
+    order.allocations.push(allocation);
+  }
 
   selectedTruckItem = null;
   selectedTruckItems.delete(truckSelectionKey(truckId, orderId));
@@ -1495,7 +1611,7 @@ function selectedTOGroups() {
 }
 
 function locationItemSummary(origin, orders) {
-  const transferAllocations = originTransferAllocations(origin);
+  const transferAllocations = locationTransferAllocations(origin);
   const sourceTotal = orders.length;
   const sourcePicked = orders.filter(order => unassignedQty(order) < order.totalQty).length;
   const transferTotal = transferAllocations.length;
@@ -1506,6 +1622,31 @@ function locationItemSummary(origin, orders) {
     total: sourceTotal + transferTotal,
     picked: sourcePicked + transferPicked
   };
+}
+
+function hubByName(name) {
+  return state.hubs.find(hub => hub.name === name);
+}
+
+function isHubLocationName(name) {
+  return /^HUB-/.test(name || "") || Boolean(hubByName(name));
+}
+
+function ensureHubLocation(name) {
+  if (!isHubLocationName(name)) return null;
+  let hub = hubByName(name);
+  if (!hub) {
+    hub = { id: `HUB-${state.nextHub++}`, name };
+    state.hubs.push(hub);
+  }
+  return hub;
+}
+
+function allLocationNames(groupedOrders = groupBy(state.orders, "origin")) {
+  return [...new Set([
+    ...Object.keys(groupedOrders),
+    ...state.hubs.map(hub => hub.name)
+  ])];
 }
 
 function selectedTOCodes() {
@@ -1722,14 +1863,21 @@ function renderTOSelector() {
 
 function render() {
   if (activeRouteOrderId && !orderById(activeRouteOrderId)) activeRouteOrderId = null;
-  if (activeHubId && !state.hubs.some(hub => hub.id === activeHubId)) activeHubId = null;
+  activeHubId = null;
   renderSelectedTOs();
   renderOrigins();
-  renderHubs();
   renderDeliveryTracking();
   renderTrucks();
   renderZoom();
   requestAnimationFrame(drawConnectors);
+}
+
+function resetOriginDetailPanel() {
+  if (!els.originDetail) return null;
+  const panel = els.originDetail.cloneNode(false);
+  els.originDetail.replaceWith(panel);
+  els.originDetail = panel;
+  return panel;
 }
 
 function renderSelectedTOs() {
@@ -1755,6 +1903,7 @@ function renderSelectedTOs() {
 
 function renderTODetail() {
   if (!els.originDetail) return;
+  resetOriginDetailPanel();
   const sourcePanel = els.originDetail.closest(".source-panel");
   const board = sourcePanel?.closest(".board");
   board?.classList.remove("is-source-detail-collapsed");
@@ -1795,38 +1944,40 @@ function renderTODetail() {
 }
 
 function renderOrigins() {
-  const validOrigins = new Set(Object.keys(groupBy(state.orders, "origin")));
+  const grouped = groupBy(state.orders, "origin");
+  const validOrigins = new Set(allLocationNames(grouped));
   originModeCollapsed = Object.fromEntries(Object.entries(originModeCollapsed)
     .filter(([key]) => validOrigins.has(key.split("|")[0])));
   selectedSourceItems = new Set([...selectedSourceItems].filter(orderId => {
     const order = orderById(orderId);
     return order && unassignedQty(order) > 0;
   }));
-  const grouped = groupBy(state.orders, "origin");
-  const originEntries = Object.entries(grouped);
-  if (!originEntries.some(([origin]) => origin === activeOriginLocation)) activeOriginLocation = null;
+  const locationNames = allLocationNames(grouped);
+  if (!locationNames.includes(activeOriginLocation)) activeOriginLocation = null;
   els.originList.innerHTML = "";
-  originEntries.forEach(([origin, orders]) => {
+  locationNames.forEach(origin => {
+    const orders = grouped[origin] || [];
     const availableIds = availableSourceIds(orders);
     const itemSummary = locationItemSummary(origin, orders);
-    const pendingTransfer = originPendingTransferAllocations(origin);
+    const pendingTransfer = locationPendingTransferAllocations(origin);
+    const isHub = isHubLocationName(origin);
     const tab = document.createElement("button");
     tab.type = "button";
     tab.className = "origin-tab";
-    if (!activeHubId && origin === activeOriginLocation) tab.classList.add("is-active");
+    if (isHub) tab.classList.add("is-hub-location");
+    if (origin === activeOriginLocation) tab.classList.add("is-active");
     if (!availableIds.length && !pendingTransfer.length) tab.classList.add("is-empty");
     if (pendingTransfer.length) tab.classList.add("has-transfer-pending");
     tab.innerHTML = `
       <strong>${origin}</strong>
       <span>${itemSummary.picked.toLocaleString()}/${itemSummary.total.toLocaleString()} รายการ</span>
     `;
-    addOriginTransferDropHandlers(tab, origin);
+    addLocationTransferDropHandlers(tab, origin);
     tab.addEventListener("click", () => {
-      if (!activeHubId && activeOriginLocation === origin) {
+      if (activeOriginLocation === origin) {
         activeOriginLocation = null;
       } else {
         activeOriginLocation = origin;
-        activeHubId = null;
         activeTOPanel = false;
       }
       render();
@@ -1835,7 +1986,7 @@ function renderOrigins() {
   });
 
   if (activeTOPanel) renderTODetail();
-  else if (!activeHubId) renderOriginDetail(activeOriginLocation ? (grouped[activeOriginLocation] || []) : []);
+  else renderOriginDetail(activeOriginLocation ? (grouped[activeOriginLocation] || []) : []);
 }
 
 function openHubSelector() {
@@ -1846,7 +1997,7 @@ function openHubSelector() {
 }
 
 function availableHubs() {
-  const existing = new Set(state.hubs.map(hub => hub.name));
+  const existing = new Set(allLocationNames());
   const keyword = hubPickerSearchText.trim().toLowerCase();
   return hubCatalog
     .filter(name => !existing.has(name))
@@ -1884,8 +2035,8 @@ function addHub(name) {
   }
   const hub = { id: `HUB-${state.nextHub++}`, name };
   state.hubs.push(hub);
-  activeHubId = hub.id;
-  activeOriginLocation = null;
+  activeHubId = null;
+  activeOriginLocation = name;
   activeTOPanel = false;
   els.hubPickerDialog?.close();
   render();
@@ -1901,6 +2052,11 @@ function hubInboundAllocations(hubId) {
 
 function hubPendingAllocations(hubId) {
   return hubInboundAllocations(hubId).filter(allocation => allocation.status === "STAGED_IN_HUB");
+}
+
+function locationHubAllocations(location) {
+  const hub = hubByName(location);
+  return hub ? hubInboundAllocations(hub.id) : [];
 }
 
 function originTransferAllocations(origin) {
@@ -1919,40 +2075,22 @@ function originPendingTransferAllocations(origin) {
   return originTransferAllocations(origin).filter(allocation => allocation.status === "STAGED_IN_HUB");
 }
 
-function renderHubs() {
-  if (!els.hubList) return;
-  els.hubList.innerHTML = "";
-  state.hubs.forEach(hub => {
-    const inbound = hubInboundAllocations(hub.id);
-    const pending = hubPendingAllocations(hub.id);
-    const tab = document.createElement("button");
-    tab.type = "button";
-    tab.className = "hub-tab";
-    if (hub.id === activeHubId) tab.classList.add("is-active");
-    if (pending.length) tab.classList.add("has-inbound");
-    tab.innerHTML = `
-      <strong>${hub.name}</strong>
-      <span>${pending.length ? "รอส่ง" : "รอรับ"} ${pending.length.toLocaleString()} items &gt;</span>
-    `;
-    addHubDropHandlers(tab, hub.id);
-    tab.addEventListener("click", () => {
-      if (activeHubId === hub.id) {
-        activeHubId = null;
-      } else {
-        activeHubId = hub.id;
-        activeOriginLocation = null;
-        activeTOPanel = false;
-      }
-      render();
-    });
-    els.hubList.append(tab);
-  });
-  const activeHub = state.hubs.find(hub => hub.id === activeHubId);
-  if (activeHub) renderHubDetail(activeHub);
+function locationTransferAllocations(location) {
+  return [
+    ...originTransferAllocations(location),
+    ...locationHubAllocations(location)
+  ];
 }
+
+function locationPendingTransferAllocations(location) {
+  return locationTransferAllocations(location).filter(allocation => allocation.status === "STAGED_IN_HUB");
+}
+
+function renderHubs() {}
 
 function renderHubDetail(hub) {
   if (!els.originDetail) return;
+  resetOriginDetailPanel();
   const sourcePanel = els.originDetail.closest(".source-panel");
   const board = sourcePanel?.closest(".board");
   board?.classList.remove("is-source-detail-collapsed");
@@ -2027,18 +2165,11 @@ function renderDeliveryTracking() {
 
 function renderOriginDetail(orders) {
   if (!els.originDetail) return;
+  resetOriginDetailPanel();
   const sourcePanel = els.originDetail.closest(".source-panel");
   const board = sourcePanel?.closest(".board");
-  const activeHub = state.hubs.find(hub => hub.id === activeHubId);
-  if (activeHub) {
-    board?.classList.remove("is-source-detail-collapsed");
-    sourcePanel?.classList.remove("is-detail-collapsed");
-    els.originDetail.classList.remove("is-collapsed");
-    renderHubDetail(activeHub);
-    return;
-  }
   els.originDetail.innerHTML = "";
-  if (!activeOriginLocation || !orders.length) {
+  if (!activeOriginLocation) {
     board?.classList.add("is-source-detail-collapsed");
     sourcePanel?.classList.add("is-detail-collapsed");
     els.originDetail.classList.add("is-collapsed");
@@ -2052,7 +2183,7 @@ function renderOriginDetail(orders) {
   const header = document.createElement("div");
   header.className = "origin-detail-head";
   header.innerHTML = `
-    <p class="eyebrow">ต้นทาง</p>
+    <p class="eyebrow">สถานที่</p>
     <h3>${activeOriginLocation}</h3>
   `;
   els.originDetail.append(header);
@@ -2063,37 +2194,39 @@ function renderOriginDetail(orders) {
   const outboundCollapseKey = `${activeOriginLocation}|OUTBOUND`;
   const pickCollapsed = Boolean(originModeCollapsed[pickCollapseKey]);
   const outboundCollapsed = Boolean(originModeCollapsed[outboundCollapseKey]);
-  const pickSection = document.createElement("section");
-  pickSection.className = "origin-mode-section origin-pick-section";
-  if (pickCollapsed) pickSection.classList.add("is-collapsed");
-  pickSection.append(sourceHeader("PICK", availableIds, "origin-mode-select origin-pick-select", {
-    collapsible: true,
-    collapsed: pickCollapsed,
-    onToggle: () => {
-      originModeCollapsed[pickCollapseKey] = !originModeCollapsed[pickCollapseKey];
-      render();
-    }
-  }));
-  const customerGroups = groupBy(orders, "customer");
-  const pickBody = document.createElement("div");
-  pickBody.className = "origin-mode-body";
-  Object.entries(customerGroups).forEach(([customer, customerOrders]) => {
-    const customerSection = document.createElement("section");
-    customerSection.className = "customer-subtab";
-    customerSection.append(sourceHeader(customer, availableSourceIds(customerOrders), "customer-select"));
-    const customerStack = document.createElement("div");
-    customerStack.className = "to-stack";
-    customerOrders.forEach(order => customerStack.append(toCard(order, unassignedQty(order), {
-      muted: unassignedQty(order) === 0,
-      hideCustomer: true,
-      sourceSelectable: true
-    })));
-    customerSection.append(customerStack);
-    pickBody.append(customerSection);
-  });
-  pickSection.append(pickBody);
-  stack.append(pickSection);
-  const transferAllocations = originTransferAllocations(activeOriginLocation);
+  if (orders.length) {
+    const pickSection = document.createElement("section");
+    pickSection.className = "origin-mode-section origin-pick-section";
+    if (pickCollapsed) pickSection.classList.add("is-collapsed");
+    pickSection.append(sourceHeader("PICK", availableIds, "origin-mode-select origin-pick-select", {
+      collapsible: true,
+      collapsed: pickCollapsed,
+      onToggle: () => {
+        originModeCollapsed[pickCollapseKey] = !originModeCollapsed[pickCollapseKey];
+        render();
+      }
+    }));
+    const customerGroups = groupBy(orders, "customer");
+    const pickBody = document.createElement("div");
+    pickBody.className = "origin-mode-body";
+    Object.entries(customerGroups).forEach(([customer, customerOrders]) => {
+      const customerSection = document.createElement("section");
+      customerSection.className = "customer-subtab";
+      customerSection.append(sourceHeader(customer, availableSourceIds(customerOrders), "customer-select"));
+      const customerStack = document.createElement("div");
+      customerStack.className = "to-stack";
+      customerOrders.forEach(order => customerStack.append(toCard(order, unassignedQty(order), {
+        muted: unassignedQty(order) === 0,
+        hideCustomer: true,
+        sourceSelectable: true
+      })));
+      customerSection.append(customerStack);
+      pickBody.append(customerSection);
+    });
+    pickSection.append(pickBody);
+    stack.append(pickSection);
+  }
+  const transferAllocations = locationTransferAllocations(activeOriginLocation);
   if (transferAllocations.length) {
     const outboundSection = document.createElement("section");
     outboundSection.className = "origin-mode-section origin-outbound-section";
@@ -2120,9 +2253,18 @@ function renderOriginDetail(orders) {
     });
     outboundSection.append(outboundStack);
     stack.append(outboundSection);
+  } else if (!orders.length && isHubLocationName(activeOriginLocation)) {
+    const emptyZone = document.createElement("div");
+    emptyZone.className = "hub-transfer-zone";
+    emptyZone.innerHTML = `
+      <span>ลากสินค้าที่ต้องการกระจายวางที่นี่</span>
+      <div class="hub-transfer-stack"></div>
+    `;
+    addLocationTransferDropHandlers(emptyZone, activeOriginLocation);
+    stack.append(emptyZone);
   }
   els.originDetail.append(stack);
-  addOriginTransferDropHandlers(els.originDetail, activeOriginLocation);
+  addLocationTransferDropHandlers(els.originDetail, activeOriginLocation);
 }
 
 function renderTrucks() {
@@ -2438,16 +2580,19 @@ function addPickupMergeHandlers(card, truck, stop) {
 }
 
 function addHubDropHandlers(zone, hubId) {
+  const acceptsHubDrop = () => dragged?.dropToHub;
   zone.addEventListener("dragover", event => {
-    if (!dragged?.dropToHub) return;
+    if (!acceptsHubDrop()) return;
     event.preventDefault();
+    event.stopPropagation();
     zone.classList.add("is-over");
   });
   zone.addEventListener("dragleave", () => zone.classList.remove("is-over"));
   zone.addEventListener("drop", event => {
-    if (!dragged?.dropToHub) return;
+    if (!acceptsHubDrop()) return;
     event.preventDefault();
     event.stopPropagation();
+    event.stopImmediatePropagation();
     zone.classList.remove("is-over");
     const hub = state.hubs.find(item => item.id === hubId);
     if (!hub) return;
@@ -2469,6 +2614,74 @@ function addHubDropHandlers(zone, hubId) {
   });
 }
 
+function addLocationTransferDropHandlers(tab, location) {
+  const isHub = isHubLocationName(location);
+  const isReturnableTruckItem = () => dragged?.fromTruckId && (dragged.orderIds?.length || dragged.orderId);
+  const isReturnableRouteItem = () => dragged?.routeSplit && dragged?.fromTruckId;
+  tab.addEventListener("dragover", event => {
+    if (
+      dragged?.dropToHub ||
+      isReturnableTruckItem() ||
+      isReturnableRouteItem()
+    ) {
+      event.preventDefault();
+      tab.classList.add("is-over");
+    }
+  });
+  tab.addEventListener("dragleave", () => tab.classList.remove("is-over"));
+  tab.addEventListener("drop", event => {
+    if (
+      !dragged?.dropToHub &&
+      !isReturnableTruckItem() &&
+      !isReturnableRouteItem()
+    ) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    tab.classList.remove("is-over");
+    if (dragged?.dropToHub) {
+      const hub = isHub ? ensureHubLocation(location) : null;
+      const transferFields = hub ? {
+        destination: `HUB:${hub.name}`,
+        status: "STAGED_IN_HUB",
+        hubId: hub.id,
+        hubName: hub.name,
+        transferLocationType: null,
+        transferLocationName: null
+      } : {
+        destination: `ORIGIN:${location}`,
+        status: "STAGED_IN_HUB",
+        transferLocationType: "ORIGIN",
+        transferLocationName: location,
+        hubId: null,
+        hubName: null
+      };
+      openDropTransferQuantityModal({
+        title: `ลงสินค้าเข้า ${location}`,
+        allocationIds: dragged.allocationIds || [dragged.allocationId],
+        dropSelections: dragged.dropSelections || null,
+        fromStopId: dragged.fromRouteStopId,
+        transferLocation: location,
+        transferFields
+      });
+      return;
+    }
+    if (isReturnableRouteItem()) {
+      const allocationIds = dragged.allocationIds || [dragged.allocationId];
+      if (canReturnRouteAllocationsToTransferLocation(allocationIds, location)) {
+        openReturnOutboundRouteAllocationsToTransferModal(dragged.fromTruckId, allocationIds, location);
+        return;
+      }
+      openReturnRouteAllocationsToOriginModal(dragged.fromTruckId, dragged.allocationIds || [dragged.allocationId], location);
+      return;
+    }
+    if (isReturnableTruckItem()) {
+      const orderIds = dragged.orderIds || [dragged.orderId];
+      openReturnTruckItemsToOriginModal(dragged.fromTruckId, orderIds, location);
+    }
+  });
+}
+
 function addOriginTransferDropHandlers(tab, origin) {
   tab.addEventListener("dragover", event => {
     if (
@@ -2482,6 +2695,7 @@ function addOriginTransferDropHandlers(tab, origin) {
   });
   tab.addEventListener("dragleave", () => tab.classList.remove("is-over"));
   tab.addEventListener("drop", event => {
+    if (activeHubId && tab === els.originDetail) return;
     if (
       !dragged?.dropToHub &&
       !(dragged?.fromTruckId && (dragged.orderIds?.length || dragged.orderId)) &&
@@ -2584,6 +2798,21 @@ function moveDropAllocationsToOrigin(origin, allocationIds, fromStopId) {
 function splitDropAllocationForTransfer(found, qty, transferFields) {
   const { order, allocation } = found;
   const isFullMove = qty >= allocation.qty;
+  const truck = truckById(allocation.truckId);
+  const originalTransfer = findOriginalTransferAllocation(order, allocation, transferFields);
+  if (originalTransfer) {
+    originalTransfer.qty += qty;
+    originalTransfer.status = "STAGED_IN_HUB";
+    Object.assign(originalTransfer, transferFields);
+    if (isFullMove) {
+      removeAllocationFromStops(truck, allocation.id);
+      removeAllocationRecord(order, allocation.id);
+    } else {
+      allocation.qty -= qty;
+    }
+    return originalTransfer.id;
+  }
+
   if (isFullMove) {
     Object.assign(allocation, transferFields);
     return allocation.id;
@@ -2601,7 +2830,6 @@ function splitDropAllocationForTransfer(found, qty, transferFields) {
     ...transferFields
   };
   order.allocations.push(transferAllocation);
-  const truck = truckById(allocation.truckId);
   (truck?.routeStops || []).forEach(stop => {
     if ((stop.type === "PICK" || stop.type === "OUTBOUND") && stop.allocationIds.includes(allocation.id)) {
       addAllocationToStop(stop, transferAllocation.id);
@@ -2787,8 +3015,7 @@ function returnTransferAllocationQuantities(allocationIds, qtyById) {
       }
     }
 
-    compactRouteStops(truck);
-    syncTruckOrigins(truck);
+    cleanupTruckPlanState(truck);
   });
 
   clearHubOutboundSelection();
@@ -2840,7 +3067,7 @@ function returnTruckItemsToOrigin(truckId, orderIds, qtyById) {
 
   selectedTruckItems.clear();
   selectedTruckItem = null;
-  syncTruckOrigins(truck);
+  cleanupTruckPlanState(truck);
   render();
   return true;
 }
@@ -2887,9 +3114,9 @@ function returnRouteAllocationsToOrigin({ truckId, allocationIds, qtyById, origi
     }
   });
 
-  compactRouteStops(truck);
-  syncTruckOrigins(truck);
+  cleanupTruckPlanState(truck);
   clearRoutePickupSelection();
+  clearRouteDropSelection();
   render();
   return true;
 }
@@ -2913,6 +3140,149 @@ function openReturnRouteAllocationsToOriginModal(truckId, allocationIds, origin)
       allocationIds: items.map(item => item.id),
       qtyById,
       origin
+    })
+  });
+}
+
+function allocationSourceTransferName(allocation) {
+  return allocation?.sourceHubName || allocation?.sourceTransferName || null;
+}
+
+function canReturnRouteAllocationsToTransferLocation(allocationIds, location) {
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  return ids.length > 0 && ids.every(allocationId => {
+    const found = allocationById(allocationId);
+    return found &&
+      found.allocation.status === "ASSIGNED" &&
+      allocationSourceTransferName(found.allocation) === location;
+  });
+}
+
+function findTransferReturnTarget(order, outboundAllocation) {
+  return order.allocations.find(allocation =>
+    allocation.id !== outboundAllocation.id &&
+    ["STAGED_IN_HUB", "MOVED_FROM_HUB"].includes(allocation.status) &&
+    ((outboundAllocation.sourceHubId && allocation.hubId === outboundAllocation.sourceHubId) ||
+      (outboundAllocation.sourceTransferName && allocation.transferLocationName === outboundAllocation.sourceTransferName))
+  );
+}
+
+function stagedFieldsFromOutbound(allocation) {
+  if (allocation.sourceHubId || allocation.sourceHubName) {
+    return {
+      destination: `HUB:${allocation.sourceHubName}`,
+      status: "STAGED_IN_HUB",
+      hubId: allocation.sourceHubId || null,
+      hubName: allocation.sourceHubName || null,
+      transferLocationType: null,
+      transferLocationName: null,
+      transferLocationId: null,
+      sourceTransferType: null,
+      sourceTransferName: null,
+      sourceHubId: null,
+      sourceHubName: null
+    };
+  }
+  return {
+    destination: `ORIGIN:${allocation.sourceTransferName}`,
+    status: "STAGED_IN_HUB",
+    hubId: null,
+    hubName: null,
+    transferLocationType: allocation.sourceTransferType || "ORIGIN",
+    transferLocationName: allocation.sourceTransferName || null,
+    transferLocationId: null,
+    sourceTransferType: null,
+    sourceTransferName: null,
+    sourceHubId: null,
+    sourceHubName: null
+  };
+}
+
+function returnOutboundRouteAllocationsToTransfer({ truckId, allocationIds, qtyById, location }) {
+  const truck = truckById(truckId);
+  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
+  if (!truck || !ids.length) return false;
+
+  ids.forEach(allocationId => {
+    const found = allocationById(allocationId);
+    const qty = Math.min(qtyById.get(allocationId) || 0, found?.allocation.qty || 0);
+    if (!found ||
+      found.allocation.truckId !== truckId ||
+      found.allocation.status !== "ASSIGNED" ||
+      allocationSourceTransferName(found.allocation) !== location ||
+      qty <= 0
+    ) return;
+
+    const isFullReturn = qty >= found.allocation.qty;
+    const transferTarget = findTransferReturnTarget(found.order, found.allocation);
+    if (transferTarget) {
+      if (transferTarget.status === "MOVED_FROM_HUB") {
+        if (qty < transferTarget.qty) {
+          transferTarget.qty -= qty;
+          found.order.allocations.push({
+            ...transferTarget,
+            id: `A-${state.nextAllocation++}`,
+            status: "STAGED_IN_HUB",
+            qty,
+            timestamp: Date.now()
+          });
+        } else {
+          transferTarget.status = "STAGED_IN_HUB";
+        }
+      } else {
+        transferTarget.qty += qty;
+      }
+    } else {
+      found.order.allocations.push({
+        id: `A-${state.nextAllocation++}`,
+        truckId,
+        qty,
+        timestamp: Date.now(),
+        ...stagedFieldsFromOutbound(found.allocation)
+      });
+    }
+
+    if (isFullReturn) {
+      removeAllocationFromStops(truck, allocationId);
+      removeAllocationRecord(found.order, allocationId);
+    } else {
+      found.allocation.qty -= qty;
+    }
+
+    if (!found.order.allocations.some(allocation => allocation.truckId === truckId && allocation.qty > 0)) {
+      truck.itemIds = truck.itemIds.filter(id => id !== found.order.id);
+    }
+  });
+
+  cleanupTruckPlanState(truck);
+  clearRoutePickupSelection();
+  clearRouteDropSelection();
+  render();
+  return true;
+}
+
+function openReturnOutboundRouteAllocationsToTransferModal(truckId, allocationIds, location) {
+  const items = [...new Set(allocationIds)]
+    .map(allocationId => {
+      const found = allocationById(allocationId);
+      return found &&
+        found.allocation.truckId === truckId &&
+        found.allocation.status === "ASSIGNED" &&
+        allocationSourceTransferName(found.allocation) === location ? {
+          id: allocationId,
+          max: found.allocation.qty,
+          summary: allocationMoveSummary(found.order, found.allocation, `จากรถ: ${truckById(truckId)?.plate || "Dummy"}<br>คืนไป: ${location}`)
+        } : null;
+    })
+    .filter(Boolean);
+  openQuantityMoveModal({
+    title: `คืนสินค้าเข้า ${location}`,
+    items,
+    onConfirm: qtyById => returnOutboundRouteAllocationsToTransfer({
+      truckId,
+      allocationIds: items.map(item => item.id),
+      qtyById,
+      location
     })
   });
 }
@@ -2944,8 +3314,21 @@ function transferRouteAllocationQuantities({ sourceTruckId, targetTruckId, alloc
     if (!sourceStops.length) return;
     const isFullMove = qty >= found.allocation.qty;
     let targetAllocationId = allocationId;
+    const mergeCandidate = { ...found.allocation, truckId: targetTruckId, qty };
+    const mergeTarget = findMergeTargetAllocation(found.order, mergeCandidate, targetTruckId, allocationId);
 
-    if (isFullMove) {
+    if (mergeTarget) {
+      mergeTarget.qty += qty;
+      sourceStops.forEach(stop => {
+        stop.allocationIds = stop.allocationIds.filter(id => id !== allocationId);
+      });
+      if (isFullMove) {
+        removeAllocationRecord(found.order, allocationId);
+      } else {
+        found.allocation.qty -= qty;
+      }
+      targetAllocationId = mergeTarget.id;
+    } else if (isFullMove) {
       found.allocation.truckId = targetTruckId;
       sourceStops.forEach(stop => {
         stop.allocationIds = stop.allocationIds.filter(id => id !== allocationId);
@@ -2974,10 +3357,8 @@ function transferRouteAllocationQuantities({ sourceTruckId, targetTruckId, alloc
     }
   });
 
-  compactRouteStops(sourceTruck);
-  compactRouteStops(targetTruck);
-  syncTruckOrigins(sourceTruck);
-  syncTruckOrigins(targetTruck);
+  cleanupTruckPlanState(sourceTruck);
+  cleanupTruckPlanState(targetTruck);
   clearRoutePickupSelection();
   clearRouteDropSelection();
   render();
@@ -3863,14 +4244,20 @@ function moveBetweenTrucks(fromTruckId, toTruckId, orderId, qty) {
   ensureOriginSequence(toTruck, order.origin);
   syncTruckOrigins(toTruck);
 
-  order.allocations.push({
-    id: `A-${state.nextAllocation++}`,
+  const movedAllocation = {
     truckId: toTruckId,
     destination: "TRUCK",
     status: "IN_TRUCK",
     qty,
     timestamp: Date.now()
-  });
+  };
+  const mergeTarget = findMergeTargetAllocation(order, movedAllocation, toTruckId);
+  if (mergeTarget) {
+    mergeTarget.qty += qty;
+  } else {
+    movedAllocation.id = `A-${state.nextAllocation++}`;
+    order.allocations.push(movedAllocation);
+  }
 
   render();
 }
