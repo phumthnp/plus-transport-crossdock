@@ -121,7 +121,7 @@ button:hover {
 
 .board {
   display: grid;
-  grid-template-columns: 560px minmax(760px, 1fr);
+  grid-template-columns: 620px minmax(0, 1fr);
   height: calc(100vh - 88px);
   min-height: calc(100vh - 88px);
   gap: 0;
@@ -129,7 +129,7 @@ button:hover {
 }
 
 .board.is-source-detail-collapsed {
-  grid-template-columns: 268px minmax(760px, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
 }
 
 .panel {
@@ -141,12 +141,12 @@ button:hover {
 
 .source-panel {
   display: grid;
-  grid-template-columns: 268px 292px;
+  grid-template-columns: 300px 320px;
   background: #eef0ee;
 }
 
 .source-panel.is-detail-collapsed {
-  grid-template-columns: 268px 0;
+  grid-template-columns: 300px 0;
 }
 
 .source-rail {
@@ -229,8 +229,8 @@ button:hover {
 
 .selected-to-card {
   display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 10px;
   align-items: center;
   padding: 10px;
   border: 1px solid var(--strong-line);
@@ -245,6 +245,7 @@ button:hover {
 }
 
 .selected-to-card strong {
+  overflow-wrap: anywhere;
   font-size: 13px;
 }
 
@@ -255,17 +256,57 @@ button:hover {
 }
 
 .selected-to-card b {
+  justify-self: start;
   white-space: nowrap;
   font-size: 12px;
 }
 
 .selected-to-card button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
   width: 26px;
   height: 26px;
   padding: 0;
   border-color: var(--line);
   background: #fff;
   color: var(--ink);
+}
+
+.selected-to-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+}
+
+.selected-to-summary.is-active {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.selected-to-summary span {
+  font-weight: 700;
+}
+
+.selected-to-summary strong {
+  font-size: 18px;
+  white-space: nowrap;
+}
+
+.selected-to-detail-list {
+  display: grid;
+  gap: 10px;
+}
+
+.selected-to-detail-card {
+  border-radius: 7px;
 }
 
 .origin-section-head {
@@ -699,6 +740,15 @@ button:hover {
   cursor: default;
 }
 
+.source-select:has(input:disabled) {
+  opacity: .42;
+  cursor: default;
+}
+
+.source-select:has(input:disabled) span {
+  color: var(--muted);
+}
+
 .source-select .section-toggle {
   width: 28px;
   height: 28px;
@@ -757,10 +807,10 @@ button:hover {
 .to-card {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px 12px;
   min-height: 54px;
   padding: 9px 10px;
   border: 1px solid var(--strong-line);
@@ -805,10 +855,22 @@ button:hover {
 }
 
 .to-card strong {
-  font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.2;
 }
 
-.to-card span {
+.to-card .to-code {
+  grid-column: 1;
+  grid-row: 2;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.to-card .to-customer {
+  grid-column: 1 / -1;
   margin-top: 2px;
   color: var(--muted);
   font-size: 12px;
@@ -827,11 +889,17 @@ button:hover {
 }
 
 .to-card b {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 18px;
+  font-weight: 400;
 }
 
 .to-card .item-undo {
+  grid-column: 3;
+  grid-row: 1 / span 2;
   width: 30px;
   height: 30px;
   padding: 0;
@@ -841,6 +909,8 @@ button:hover {
 }
 
 .route-menu {
+  grid-column: 3;
+  grid-row: 1 / span 2;
   position: relative;
   z-index: 60;
 }
@@ -901,15 +971,14 @@ button:hover {
 
 .stage-actions {
   display: flex;
-  position: sticky;
-  top: 16px;
-  right: 16px;
-  z-index: 30;
-  float: right;
+  position: fixed;
+  top: 178px;
+  right: 24px;
+  z-index: 80;
   align-items: center;
   gap: 10px;
   width: max-content;
-  margin: 16px 16px 0 auto;
+  margin: 0;
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1018,6 +1087,10 @@ button:hover {
   background: #f7fbf8;
 }
 
+.truck-card.is-over-capacity {
+  box-shadow: inset 4px 0 0 var(--danger);
+}
+
 .truck-head,
 .destination-head {
   display: flex;
@@ -1050,6 +1123,13 @@ button:hover {
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
+}
+
+.stop-load {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .pickup-card .destination-head,
@@ -1541,7 +1621,7 @@ button:hover {
 
 .allocation-line {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 52px;
@@ -1549,6 +1629,38 @@ button:hover {
   border: 1px solid var(--strong-line);
   border-radius: 3px;
   background: #fff;
+}
+
+.item-card-content {
+  min-width: 0;
+}
+
+.item-card-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.item-card-main strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.item-card-main b {
+  white-space: nowrap;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.allocation-line span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .allocation-line.is-muted {
@@ -2141,7 +2253,7 @@ button {
 }
 
 .destination-card.inbound-card {
-  background: var(--inbound);
+  background: var(--drop);
 }
 
 .hub-card {
@@ -2180,6 +2292,12 @@ button {
 .truck-head h3,
 .destination-head h3 {
   font-size: 15px;
+}
+
+.pickup-card.is-over-capacity,
+.destination-card.is-over-capacity {
+  outline: 2px solid var(--danger);
+  outline-offset: 3px;
 }
 
 .allocation-line,
@@ -2226,8 +2344,6 @@ button {
   background: var(--warning-soft);
 }
 
-.origin-list button.is-complete,
-.hub-list button.is-complete,
 .delivery-list button.is-complete {
   background: var(--success-soft);
 }

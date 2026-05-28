@@ -8,10 +8,25 @@ const initialOrders = [
   { id: "TO-007", code: "T/O XXX-XXX-X03", product: "อาชา", customer: "เฮียบิ๊ก", origin: "โรงงาน อยุธยา", totalQty: 1000, weightPerPack: 1.0, allocations: [] },
   { id: "TO-008", code: "T/O XXX-XXX-X02", product: "ช้างคลาสสิก", customer: "เฮียพูล", origin: "โรงงาน อยุธยา", totalQty: 1000, weightPerPack: 1.0, allocations: [] },
   { id: "TO-009", code: "T/O XXX-XXX-X02", product: "แรงเจอร์", customer: "เฮียพูล", origin: "โรงงาน สมุทรสาคร", totalQty: 500, weightPerPack: 1.0, allocations: [] },
-  { id: "TO-010", code: "T/O XXX-XXX-X02", product: "คาร์เนชั่น", customer: "เฮียพูล", origin: "โรงงาน สมุทรปราการ", totalQty: 500, weightPerPack: 1.0, allocations: [] }
+  { id: "TO-010", code: "T/O XXX-XXX-X02", product: "คาร์เนชั่น", customer: "เฮียพูล", origin: "โรงงาน สมุทรปราการ", totalQty: 500, weightPerPack: 1.0, allocations: [] },
+  { id: "TO-011", code: "TO2603250010", product: "คริสตัล", customer: "เฮียเมฆ", origin: "HUB-บางนา", totalQty: 1000, weightPerPack: 1.0, allocations: [] },
+  { id: "TO-012", code: "TO2603250010", product: "เอส", customer: "เฮียเมฆ", origin: "HUB-บางนา", totalQty: 800, weightPerPack: 1.0, allocations: [] }
 ];
 
 const availableTOCatalog = [
+  {
+    code: "TO2603250009",
+    tr: "OC-L53574-2603250009",
+    ref: "P2603250122",
+    priority: "ปกติ",
+    type: "Hub Stock",
+    shipDate: "24/04/2026",
+    requestDate: "28/04/2026",
+    lines: [
+      { sku: "810000901", product: "คริสตัล", customer: "เฮียเมฆ", origin: "HUB-หลักสี่", qty: 1000, unit: "แพ็ก", weightPerPack: 1.0 },
+      { sku: "810000902", product: "เอส", customer: "เฮียเมฆ", origin: "HUB-หลักสี่", qty: 800, unit: "แพ็ก", weightPerPack: 1.0 }
+    ]
+  },
   {
     code: "TO2603250008",
     tr: "OC-L53574-2603250008",
@@ -98,6 +113,7 @@ let draftTOSelection = new Set();
 let expandedTOSelection = new Set();
 let toPickerSearchText = "";
 let selectedTOCollapsed = false;
+let activeTOPanel = false;
 let originModeCollapsed = {};
 let mockTOCounter = 1;
 let zoomLevel = 1;
@@ -241,6 +257,32 @@ function truckWeight(truck) {
     const order = orderById(orderId);
     return sum + routeQtyForTruck(order, truck.id) * order.weightPerPack;
   }, 0);
+}
+
+function allocationWeight(allocationId, truckId = null) {
+  const found = allocationById(allocationId);
+  if (!found) return 0;
+  if (truckId && found.allocation.truckId !== truckId) return 0;
+  return found.allocation.qty * found.order.weightPerPack;
+}
+
+function routeLoadTimeline(truck) {
+  let load = 0;
+  let peak = 0;
+  const byStopId = new Map();
+  (truck.routeStops || []).forEach(stop => {
+    const weight = stop.allocationIds.reduce((sum, allocationId) => sum + allocationWeight(allocationId, truck.id), 0);
+    const delta = (stop.type === "PICK" || stop.type === "OUTBOUND") ? weight : -weight;
+    load = Math.max(0, load + delta);
+    peak = Math.max(peak, load);
+    byStopId.set(stop.id, {
+      delta,
+      load,
+      remainingCapacity: Math.max(truck.capacity - load, 0),
+      isOverCapacity: load > truck.capacity
+    });
+  });
+  return { peak, byStopId };
 }
 
 function routeAllocationsForTruck(truckId) {
@@ -1445,9 +1487,25 @@ function selectedTOGroups() {
   return Object.entries(groupBy(state.orders, "code")).map(([code, orders]) => ({
     code,
     orders,
-    totalQty: orders.reduce((sum, order) => sum + order.totalQty, 0),
-    remainingQty: orders.reduce((sum, order) => sum + Math.max(unassignedQty(order), 0), 0)
+    totalItems: orders.length,
+    plannedItems: orders.filter(order =>
+      order.allocations.some(allocation => allocation.status !== "MOVED_FROM_HUB")
+    ).length
   }));
+}
+
+function locationItemSummary(origin, orders) {
+  const transferAllocations = originTransferAllocations(origin);
+  const sourceTotal = orders.length;
+  const sourcePicked = orders.filter(order => unassignedQty(order) < order.totalQty).length;
+  const transferTotal = transferAllocations.length;
+  const transferPicked = transferAllocations
+    .filter(allocation => allocation.status === "MOVED_FROM_HUB")
+    .length;
+  return {
+    total: sourceTotal + transferTotal,
+    picked: sourcePicked + transferPicked
+  };
 }
 
 function selectedTOCodes() {
@@ -1677,19 +1735,61 @@ function render() {
 function renderSelectedTOs() {
   if (!els.selectedTOList) return;
   const groups = selectedTOGroups();
-  els.selectedTOList.closest(".to-selection-panel")?.classList.toggle("is-collapsed", selectedTOCollapsed);
-  if (els.toggleTOPanelButton) els.toggleTOPanelButton.textContent = selectedTOCollapsed ? "ขยาย" : "ย่อ";
-  els.selectedTOList.innerHTML = groups.map(group => `
-    <article class="selected-to-card">
+  els.selectedTOList.closest(".to-selection-panel")?.classList.remove("is-collapsed");
+  if (els.toggleTOPanelButton) els.toggleTOPanelButton.textContent = activeTOPanel ? "ซ่อน" : "ดู";
+  els.selectedTOList.innerHTML = `
+    <button type="button" class="selected-to-summary ${activeTOPanel ? "is-active" : ""}">
+      <span>T/O ที่ต้องการจัดแผน</span>
+      <strong>${groups.length.toLocaleString()} รายการ</strong>
+    </button>
+  `;
+  els.selectedTOList.querySelector(".selected-to-summary")?.addEventListener("click", () => {
+    activeTOPanel = !activeTOPanel;
+    if (activeTOPanel) {
+      activeOriginLocation = null;
+      activeHubId = null;
+    }
+    render();
+  });
+}
+
+function renderTODetail() {
+  if (!els.originDetail) return;
+  const sourcePanel = els.originDetail.closest(".source-panel");
+  const board = sourcePanel?.closest(".board");
+  board?.classList.remove("is-source-detail-collapsed");
+  sourcePanel?.classList.remove("is-detail-collapsed");
+  els.originDetail.classList.remove("is-collapsed");
+
+  const groups = selectedTOGroups();
+  els.originDetail.innerHTML = `
+    <div class="origin-detail-head">
+      <p class="eyebrow">T/O selected list</p>
+      <h3>รายการที่เลือกมาจัดแผน</h3>
+    </div>
+    <div class="selected-to-detail-list"></div>
+  `;
+  const list = els.originDetail.querySelector(".selected-to-detail-list");
+  groups.forEach(group => {
+    const card = document.createElement("article");
+    card.className = "selected-to-card selected-to-detail-card";
+    card.innerHTML = `
       <div>
         <strong>${group.code}</strong>
         <span>${group.orders.length.toLocaleString()} รายการสินค้า</span>
       </div>
-      <b>${group.remainingQty.toLocaleString()}/${group.totalQty.toLocaleString()} แพ็ก</b>
+      <b>${group.plannedItems.toLocaleString()}/${group.totalItems.toLocaleString()} รายการ</b>
       <button type="button" data-code="${group.code}" aria-label="ลบ T/O">×</button>
-    </article>
-  `).join("");
-  els.selectedTOList.querySelectorAll("button[data-code]").forEach(button => {
+    `;
+    list.append(card);
+  });
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.className = "to-picker-empty";
+    empty.textContent = "ยังไม่มี T/O ที่เลือกมาจัดแผน";
+    list.append(empty);
+  }
+  list.querySelectorAll("button[data-code]").forEach(button => {
     button.addEventListener("click", () => removePlanningTO(button.dataset.code));
   });
 }
@@ -1708,19 +1808,17 @@ function renderOrigins() {
   els.originList.innerHTML = "";
   originEntries.forEach(([origin, orders]) => {
     const availableIds = availableSourceIds(orders);
-    const totalQty = orders.reduce((sum, order) => sum + order.totalQty, 0);
-    const remainingQty = orders.reduce((sum, order) => sum + Math.max(unassignedQty(order), 0), 0);
+    const itemSummary = locationItemSummary(origin, orders);
     const pendingTransfer = originPendingTransferAllocations(origin);
     const tab = document.createElement("button");
     tab.type = "button";
     tab.className = "origin-tab";
     if (!activeHubId && origin === activeOriginLocation) tab.classList.add("is-active");
-    if (!availableIds.length) tab.classList.add("is-empty");
+    if (!availableIds.length && !pendingTransfer.length) tab.classList.add("is-empty");
     if (pendingTransfer.length) tab.classList.add("has-transfer-pending");
-    else if (!availableIds.length && originTransferAllocations(origin).length) tab.classList.add("is-complete");
     tab.innerHTML = `
       <strong>${origin}</strong>
-      <span>${pendingTransfer.length ? `รอส่ง ${pendingTransfer.length.toLocaleString()} items >` : `${remainingQty.toLocaleString()}/${totalQty.toLocaleString()} แพ็ก`}</span>
+      <span>${itemSummary.picked.toLocaleString()}/${itemSummary.total.toLocaleString()} รายการ</span>
     `;
     addOriginTransferDropHandlers(tab, origin);
     tab.addEventListener("click", () => {
@@ -1729,13 +1827,15 @@ function renderOrigins() {
       } else {
         activeOriginLocation = origin;
         activeHubId = null;
+        activeTOPanel = false;
       }
       render();
     });
     els.originList.append(tab);
   });
 
-  if (!activeHubId) renderOriginDetail(activeOriginLocation ? (grouped[activeOriginLocation] || []) : []);
+  if (activeTOPanel) renderTODetail();
+  else if (!activeHubId) renderOriginDetail(activeOriginLocation ? (grouped[activeOriginLocation] || []) : []);
 }
 
 function openHubSelector() {
@@ -1786,6 +1886,7 @@ function addHub(name) {
   state.hubs.push(hub);
   activeHubId = hub.id;
   activeOriginLocation = null;
+  activeTOPanel = false;
   els.hubPickerDialog?.close();
   render();
 }
@@ -1829,7 +1930,6 @@ function renderHubs() {
     tab.className = "hub-tab";
     if (hub.id === activeHubId) tab.classList.add("is-active");
     if (pending.length) tab.classList.add("has-inbound");
-    else if (inbound.length) tab.classList.add("is-complete");
     tab.innerHTML = `
       <strong>${hub.name}</strong>
       <span>${pending.length ? "รอส่ง" : "รอรับ"} ${pending.length.toLocaleString()} items &gt;</span>
@@ -1841,6 +1941,7 @@ function renderHubs() {
       } else {
         activeHubId = hub.id;
         activeOriginLocation = null;
+        activeTOPanel = false;
       }
       render();
     });
@@ -1912,7 +2013,7 @@ function renderDeliveryTracking() {
     tab.classList.add(group.delivered >= group.planned ? "is-complete" : "is-pending");
     tab.innerHTML = `
       <strong>${group.customer}</strong>
-      <span>${group.delivered >= group.planned ? "ส่งแล้ว" : "รอส่ง"} ${group.delivered.toLocaleString()}/${group.planned.toLocaleString()} items &gt;</span>
+      <span>${group.delivered.toLocaleString()}/${group.planned.toLocaleString()} items</span>
     `;
     els.deliveryList.append(tab);
   });
@@ -2065,8 +2166,10 @@ function truckRow(truck) {
 }
 
 function truckCard(truck) {
+  const loadTimeline = routeLoadTimeline(truck);
   const truckCard = document.createElement("article");
   truckCard.className = "truck-card";
+  if (loadTimeline.peak > truck.capacity) truckCard.classList.add("is-over-capacity");
   if (truck.sourceType === "HUB") truckCard.classList.add("from-hub-card");
   truckCard.dataset.truckId = truck.id;
   truckCard.dataset.routeOrderIds = routeIdsAttr(truck.itemIds);
@@ -2093,7 +2196,7 @@ function truckCard(truck) {
       <input data-field="plate" value="${truck.plate === "Dummy" ? "" : truck.plate}" placeholder="ระบุทะเบียนรถ" aria-label="ทะเบียนรถ">
     </div>
     <div class="truck-meta">
-      <span>น้ำหนักบรรทุก ${truckWeight(truck).toLocaleString()}/${truck.capacity.toLocaleString()} กก.</span>
+      <span>Peak load ${loadTimeline.peak.toLocaleString()}/${truck.capacity.toLocaleString()} กก.</span>
     </div>
     <div class="to-stack"></div>
   `;
@@ -2906,6 +3009,11 @@ function openRouteAllocationTransferModal(sourceTruckId, targetTruckId, allocati
 
 
 function routeStopNode(truck, stop, index = 0) {
+  const loadInfo = routeLoadTimeline(truck).byStopId.get(stop.id) || {
+    load: 0,
+    remainingCapacity: truck.capacity,
+    isOverCapacity: false
+  };
   const allocations = stop.allocationIds
     .map(allocationById)
     .filter(Boolean)
@@ -2921,6 +3029,7 @@ function routeStopNode(truck, stop, index = 0) {
     : stop.type === "INBOUND"
       ? "destination-card inbound-card"
       : "destination-card drop-card";
+  if (loadInfo.isOverCapacity) card.classList.add("is-over-capacity");
   card.dataset.truckId = truck.id;
   card.dataset.stopId = stop.id;
   card.dataset.routeOrderIds = routeIdsAttr(allocations.map(({ order }) => order.id));
@@ -2929,6 +3038,7 @@ function routeStopNode(truck, stop, index = 0) {
     <div class="destination-head" draggable="true">
       <span class="stop-step">${String(index + 1).padStart(2, "0")}</span>
       ${stopHeading(stop, allocations)}
+      <span class="stop-load">นน. ${loadInfo.load.toLocaleString()} / ${truck.capacity.toLocaleString()} กก. | คงเหลือ ${loadInfo.remainingCapacity.toLocaleString()} กก.</span>
     </div>
     <div class="destination-items"></div>
   `;
@@ -3321,10 +3431,12 @@ function allocationLine(allocation, options = {}) {
   const showUndo = !options.readonly && !options.hideActions && !isMovedFromHub;
   const showActions = showReturnTransfer || showLoad || showUndo;
   line.innerHTML = `
-    <div>
-      <strong>${allocation.order.product}</strong>
+    <div class="item-card-content">
+      <div class="item-card-main">
+        <strong>${allocation.order.product}</strong>
+        <b>${allocation.qty.toLocaleString()} แพ็ก</b>
+      </div>
       <span>${allocation.order.code}</span>
-      <b>${allocation.qty.toLocaleString()} แพ็ก</b>
     </div>
     ${showActions ? `
       <div class="allocation-actions">
@@ -3509,7 +3621,9 @@ function toCard(order, qty, options = {}) {
   node.querySelector(".to-code").textContent = order.code;
   node.querySelector(".to-customer").textContent = options.hideCustomer ? "" : order.customer;
   if (options.hideCustomer) node.querySelector(".to-customer").hidden = true;
-  node.querySelector(".to-qty").textContent = `${qty.toLocaleString()} แพ็ก`;
+  node.querySelector(".to-qty").textContent = options.itemCountOnly
+    ? `${qty > 0 ? 1 : 0} item`
+    : `${qty.toLocaleString()} แพ็ก`;
 
   if (options.showTruckUndo) {
     const button = document.createElement("button");
@@ -3835,8 +3949,12 @@ els.hubPickerSearch?.addEventListener("input", event => {
 els.cancelHubPickerButton?.addEventListener("click", () => els.hubPickerDialog?.close());
 els.closeHubPickerButton?.addEventListener("click", () => els.hubPickerDialog?.close());
 els.toggleTOPanelButton?.addEventListener("click", () => {
-  selectedTOCollapsed = !selectedTOCollapsed;
-  renderSelectedTOs();
+  activeTOPanel = !activeTOPanel;
+  if (activeTOPanel) {
+    activeOriginLocation = null;
+    activeHubId = null;
+  }
+  render();
 });
 els.toPickerSearch?.addEventListener("input", event => {
   toPickerSearchText = event.target.value;
@@ -3866,6 +3984,7 @@ els.resetPlanButton?.addEventListener("click", () => {
   clearRouteDropSelection();
   clearHubOutboundSelection();
   activeHubId = null;
+  activeTOPanel = false;
   draftTOSelection.clear();
   expandedTOSelection.clear();
   selectedTOCollapsed = false;
