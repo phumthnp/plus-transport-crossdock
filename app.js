@@ -7,7 +7,7 @@ const initialOrders = [
   { id: "TO-006", code: "T/O XXX-XXX-X01", product: "ช้างโคลด์บรูว", customer: "เฮียบิ๊ก", origin: "โรงงาน อยุธยา", totalQty: 1000, weightPerPack: 1.0, allocations: [] },
   { id: "TO-007", code: "T/O XXX-XXX-X03", product: "อาชา", customer: "เฮียบิ๊ก", origin: "โรงงาน อยุธยา", totalQty: 1000, weightPerPack: 1.0, allocations: [] },
   { id: "TO-008", code: "T/O XXX-XXX-X02", product: "ช้างคลาสสิก", customer: "เฮียพูล", origin: "โรงงาน อยุธยา", totalQty: 1000, weightPerPack: 1.0, allocations: [] },
-  { id: "TO-009", code: "T/O XXX-XXX-X02", product: "แรงเงอร์", customer: "เฮียพูล", origin: "โรงงาน สมุทรสาคร", totalQty: 500, weightPerPack: 1.0, allocations: [] },
+  { id: "TO-009", code: "T/O XXX-XXX-X02", product: "แรงเจอร์", customer: "เฮียพูล", origin: "โรงงาน สมุทรสาคร", totalQty: 500, weightPerPack: 1.0, allocations: [] },
   { id: "TO-010", code: "T/O XXX-XXX-X02", product: "คาร์เนชั่น", customer: "เฮียพูล", origin: "โรงงาน สมุทรปราการ", totalQty: 500, weightPerPack: 1.0, allocations: [] }
 ];
 
@@ -23,7 +23,7 @@ const availableTOCatalog = [
     lines: [
       { sku: "710000901", product: "คริสตัล", customer: "เฮียเมฆ", origin: "โรงงาน ปทุมธานี", qty: 900, unit: "แพ็ก", weightPerPack: 1.0 },
       { sku: "710000902", product: "ช้างคลาสสิก", customer: "เฮียเมฆ", origin: "โรงงาน อยุธยา", qty: 1000, unit: "แพ็ก", weightPerPack: 1.0 },
-      { sku: "710000903", product: "แรงเงอร์", customer: "เฮียเมฆ", origin: "โรงงาน สมุทรสาคร", qty: 600, unit: "แพ็ก", weightPerPack: 1.0 }
+      { sku: "710000903", product: "แรงเจอร์", customer: "เฮียเมฆ", origin: "โรงงาน สมุทรสาคร", qty: 600, unit: "แพ็ก", weightPerPack: 1.0 }
     ]
   },
   {
@@ -74,7 +74,7 @@ const availableTOCatalog = [
     requestDate: "26/04/2026",
     lines: [
       { sku: "150000777", product: "คาร์เนชั่น", customer: "เฮียก้อง", origin: "โรงงาน สมุทรปราการ", qty: 600, unit: "แพ็ก", weightPerPack: 1.0 },
-      { sku: "150000778", product: "แรงเงอร์", customer: "เฮียก้อง", origin: "โรงงาน สมุทรปราการ", qty: 500, unit: "แพ็ก", weightPerPack: 1.0 }
+      { sku: "150000778", product: "แรงเจอร์", customer: "เฮียก้อง", origin: "โรงงาน สมุทรปราการ", qty: 500, unit: "แพ็ก", weightPerPack: 1.0 }
     ]
   }
 ];
@@ -146,6 +146,12 @@ els.hubPickerSearch = document.querySelector("#hubPickerSearch");
 els.hubPickerCount = document.querySelector("#hubPickerCount");
 els.cancelHubPickerButton = document.querySelector("#cancelHubPickerButton");
 els.closeHubPickerButton = document.querySelector("#closeHubPickerButton");
+els.planSummaryButton = document.querySelector("#planSummaryButton");
+els.planSummaryDialog = document.querySelector("#planSummaryDialog");
+els.planSummaryContent = document.querySelector("#planSummaryContent");
+els.closePlanSummaryButton = document.querySelector("#closePlanSummaryButton");
+els.cancelPlanSummaryButton = document.querySelector("#cancelPlanSummaryButton");
+els.confirmPlanSummaryButton = document.querySelector("#confirmPlanSummaryButton");
 
 function createInitialState() {
   return {
@@ -739,6 +745,83 @@ function allocationMoveSummary(order, allocation, extra = "") {
   `;
 }
 
+function stopSummaryTitle(stop) {
+  if (stop.type === "DROP" || stop.type === "INBOUND") return stop.location;
+  return shortLocationName(stop.location);
+}
+
+function stopSummaryType(stop) {
+  return stop.type === "OUTBOUND" ? "OUTBOUND" : stop.type;
+}
+
+function summarizeStopAllocations(truck, stop) {
+  const groups = new Map();
+  stop.allocationIds
+    .map(allocationById)
+    .filter(Boolean)
+    .filter(({ allocation }) => allocation.truckId === truck.id && allocation.status !== "MOVED_FROM_HUB")
+    .forEach(({ order, allocation }) => {
+      if (!groups.has(order.code)) groups.set(order.code, []);
+      groups.get(order.code).push({ product: order.product, qty: allocation.qty });
+    });
+  return [...groups.entries()].map(([code, rows]) => ({ code, rows }));
+}
+
+function renderPlanSummary() {
+  const plannedTrucks = state.trucks.filter(truck =>
+    (truck.routeStops || []).some(stop => summarizeStopAllocations(truck, stop).length)
+  );
+
+  if (!plannedTrucks.length) {
+    els.planSummaryContent.innerHTML = `
+      <div class="plan-summary-empty">
+        <strong>ยังไม่มีแผนจัดส่ง</strong>
+        <span>ลากสินค้าเข้ารถและจัดลำดับปลายทางก่อนสรุปแผน</span>
+      </div>
+    `;
+    return;
+  }
+
+  els.planSummaryContent.innerHTML = plannedTrucks.map((truck, truckIndex) => {
+    const stops = truck.routeStops
+      .map(stop => ({ stop, groups: summarizeStopAllocations(truck, stop) }))
+      .filter(item => item.groups.length);
+    return `
+      <section class="plan-summary-route">
+        <div class="plan-summary-route-head">
+          <span>รถคันที่ ${truckIndex + 1}</span>
+          <strong>${truck.plate || "Dummy"}</strong>
+        </div>
+        <div class="plan-summary-stops">
+          ${stops.map(({ stop, groups }) => `
+            <article class="plan-summary-stop">
+              <div class="plan-location-pill">${stopSummaryTitle(stop)}</div>
+              <div class="plan-stop-card">
+                <h4>${stopSummaryType(stop)}</h4>
+                ${groups.map(group => `
+                  <section class="plan-to-group">
+                    <h5>${group.code}</h5>
+                    <ul>
+                      ${group.rows.map(row => `
+                        <li><span>${row.product}</span><b>${row.qty.toLocaleString()} แพ็ก</b></li>
+                      `).join("")}
+                    </ul>
+                  </section>
+                `).join("")}
+              </div>
+            </article>
+          `).join("")}
+        </div>
+      </section>
+    `;
+  }).join("");
+}
+
+function openPlanSummary() {
+  renderPlanSummary();
+  els.planSummaryDialog?.showModal();
+}
+
 function openSourceToTruckQuantityModal(truckId, orderIds) {
   const items = [...new Set(orderIds)]
     .map(orderId => {
@@ -1283,6 +1366,33 @@ function routeCustomerHeader(label, allocations, context, stopId = null) {
   return header;
 }
 
+function allocationSectionHeader(label, allocations, context, className = "") {
+  const header = document.createElement("label");
+  header.className = `source-select origin-mode-select ${className}`.trim();
+  header.innerHTML = `
+    <input type="checkbox">
+    <span>${label}</span>
+  `;
+  const selectable = allocations.filter(allocation => allocation.status !== "MOVED_FROM_HUB");
+  const store = routeSelectionStore(context);
+  const keys = selectable.map(allocation => routeSelectionKeyFor(allocation, context));
+  const checkbox = header.querySelector("input");
+  const selectedCount = store ? keys.filter(key => store.has(key)).length : 0;
+  checkbox.checked = keys.length > 0 && selectedCount === keys.length;
+  checkbox.indeterminate = selectedCount > 0 && selectedCount < keys.length;
+  checkbox.disabled = !store || keys.length === 0;
+  checkbox.addEventListener("change", event => {
+    if (!store) return;
+    if (event.target.checked) clearActionSelections(context === "location-outbound" ? "location-source" : context);
+    keys.forEach(key => {
+      if (event.target.checked) store.add(key);
+      else store.delete(key);
+    });
+    render();
+  });
+  return header;
+}
+
 function truckCustomerHeader(truck, label, orders) {
   const header = document.createElement("label");
   header.className = "source-select customer-select route-customer-select truck-customer-select";
@@ -1399,7 +1509,7 @@ function createMockMultiOriginTO() {
     alert("กรุณาระบุชื่อต้นทางอย่างน้อย 1 แห่ง");
     return;
   }
-  const products = ["คริสตัล", "ช้างโคลด์บรูว", "คาร์เนชั่น", "เอส", "แรงเงอร์"];
+  const products = ["คริสตัล", "ช้างโคลด์บรูว", "คาร์เนชั่น", "เอส", "แรงเจอร์"];
   availableTOCatalog.unshift({
     code,
     tr: `OC-MOCK-${String(5300 + index)}`,
@@ -1824,11 +1934,13 @@ function renderOriginDetail(orders) {
     <p class="eyebrow">ต้นทาง</p>
     <h3>${activeOriginLocation}</h3>
   `;
-  header.append(sourceHeader("PICK", availableIds, "origin-pick-select"));
   els.originDetail.append(header);
 
   const stack = document.createElement("div");
   stack.className = "origin-detail-stack";
+  const pickSection = document.createElement("section");
+  pickSection.className = "origin-mode-section origin-pick-section";
+  pickSection.append(sourceHeader("PICK", availableIds, "origin-mode-select origin-pick-select"));
   const customerGroups = groupBy(orders, "customer");
   Object.entries(customerGroups).forEach(([customer, customerOrders]) => {
     const customerSection = document.createElement("section");
@@ -1842,13 +1954,14 @@ function renderOriginDetail(orders) {
       sourceSelectable: true
     })));
     customerSection.append(customerStack);
-    stack.append(customerSection);
+    pickSection.append(customerSection);
   });
+  stack.append(pickSection);
   const transferAllocations = originTransferAllocations(activeOriginLocation);
   if (transferAllocations.length) {
     const outboundSection = document.createElement("section");
-    outboundSection.className = "customer-subtab origin-outbound-section";
-    outboundSection.innerHTML = `<div class="source-select origin-pick-select"><span>OUTBOUND</span></div>`;
+    outboundSection.className = "origin-mode-section origin-outbound-section";
+    outboundSection.append(allocationSectionHeader("OUTBOUND", transferAllocations, "location-outbound", "origin-outbound-select"));
     const outboundStack = document.createElement("div");
     outboundStack.className = "to-stack";
     Object.entries(groupAllocationsByCustomer(transferAllocations)).forEach(([customer, allocations]) => {
@@ -3689,6 +3802,13 @@ els.confirmTOPickerButton?.addEventListener("click", addSelectedTOs);
 els.cancelTOPickerButton?.addEventListener("click", () => els.toPickerDialog?.close());
 els.closeTOPickerButton?.addEventListener("click", () => els.toPickerDialog?.close());
 els.mockTOButton?.addEventListener("click", createMockMultiOriginTO);
+els.planSummaryButton?.addEventListener("click", openPlanSummary);
+els.closePlanSummaryButton?.addEventListener("click", () => els.planSummaryDialog?.close());
+els.cancelPlanSummaryButton?.addEventListener("click", () => els.planSummaryDialog?.close());
+els.confirmPlanSummaryButton?.addEventListener("click", () => {
+  els.planSummaryDialog?.close();
+  alert("ยืนยันแผนจัดส่งแล้ว");
+});
 
 els.resetButton.addEventListener("click", () => {
   state = createInitialState();

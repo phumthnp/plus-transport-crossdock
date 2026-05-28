@@ -13,6 +13,7 @@
         <h1>Transport Planning Board</h1>
         <span class="version-badge">v0.3.2-poc</span>
       </div>
+      <button type="button" class="ghost" id="planSummaryButton">สรุปแผนจัดส่ง</button>
     </header>
 
     <main class="board">
@@ -74,14 +75,14 @@
             <p class="eyebrow">Planning Flow</p>
             <h2>จัดรถและเลือกปลายทาง</h2>
           </div>
+        </div>
+        <div class="canvas-viewport">
           <div class="stage-actions">
             <button type="button" class="ghost" id="zoomOutButton">-</button>
             <span class="zoom-label" id="zoomLabel">100%</span>
             <button type="button" class="ghost" id="zoomInButton">+</button>
             <button type="button" class="ghost" id="resetButton">Reset</button>
           </div>
-        </div>
-        <div class="canvas-viewport">
           <div id="truckCanvas" class="truck-canvas"></div>
         </div>
       </section>
@@ -157,6 +158,23 @@
           <div class="to-picker-actions">
             <button type="button" class="ghost" id="cancelHubPickerButton">ยกเลิก</button>
           </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="planSummaryDialog" class="plan-summary-modal">
+      <form method="dialog">
+        <div class="plan-summary-head">
+          <div>
+            <p class="eyebrow">Delivery Plan</p>
+            <h3>สรุปแผนจัดส่ง</h3>
+          </div>
+          <button type="button" class="icon-button" id="closePlanSummaryButton" aria-label="ปิด">x</button>
+        </div>
+        <div id="planSummaryContent" class="plan-summary-content"></div>
+        <div class="plan-summary-actions">
+          <button type="button" class="ghost" id="cancelPlanSummaryButton">กลับไปแก้ไข</button>
+          <button type="button" id="confirmPlanSummaryButton">ยืนยันแผน</button>
         </div>
       </form>
     </dialog>
