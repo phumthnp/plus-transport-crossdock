@@ -105,7 +105,6 @@ let activeHubId = null;
 let hubPickerSearchText = "";
 
 const els = {
-  summaryStrip: document.querySelector("#summaryStrip"),
   selectedTOList: document.querySelector("#selectedTOList"),
   addTOButton: document.querySelector("#addTOButton"),
   toggleTOPanelButton: document.querySelector("#toggleTOPanelButton"),
@@ -271,10 +270,10 @@ function pickupLikeStopAt(truck, location) {
 
 function pickupStopModes(stop, allocations = []) {
   const modes = new Set();
+  if (stop.type === "DROP") return ["DROP"];
+  if (stop.type === "INBOUND") return ["INBOUND"];
   if (stop.type === "PICK") modes.add("PICK");
   if (stop.type === "OUTBOUND") modes.add("OUTBOUND");
-  if (stop.type === "INBOUND") modes.add("INBOUND");
-  if (stop.type === "DROP") modes.add("DROP");
   allocations.forEach(allocation => {
     if (allocation.sourceTransferName || allocation.sourceHubName || allocation.sourceTransferType) modes.add("OUTBOUND");
     else if (stop.type === "PICK" || stop.type === "OUTBOUND") modes.add("PICK");
@@ -293,6 +292,10 @@ function stopHeading(stop, allocations = []) {
 
 function stopById(truck, stopId) {
   return (truck.routeStops || []).find(stop => stop.id === stopId);
+}
+
+function truckByStopId(stopId) {
+  return state.trucks.find(truck => stopById(truck, stopId));
 }
 
 function allocationById(allocationId) {
@@ -384,12 +387,10 @@ function parseRouteDropKey(key) {
   return { fromStopId, allocationId };
 }
 
-function selectedDropIdsForStop(fromStopId, fallbackAllocationId = null) {
-  const ids = [...selectedRouteDrops]
-    .map(parseRouteDropKey)
-    .filter(selection => selection.fromStopId === fromStopId)
-    .map(selection => selection.allocationId);
-  return ids.length ? ids : (fallbackAllocationId ? [fallbackAllocationId] : []);
+function selectedDropSelectionsForDrag(fromStopId, fallbackAllocationId = null) {
+  const selections = [...selectedRouteDrops].map(parseRouteDropKey);
+  if (selections.length) return selections;
+  return fallbackAllocationId ? [{ fromStopId, allocationId: fallbackAllocationId }] : [];
 }
 
 function clearRouteDropSelection() {
@@ -1537,7 +1538,6 @@ function renderTOSelector() {
 function render() {
   if (activeRouteOrderId && !orderById(activeRouteOrderId)) activeRouteOrderId = null;
   if (activeHubId && !state.hubs.some(hub => hub.id === activeHubId)) activeHubId = null;
-  renderSummary();
   renderSelectedTOs();
   renderOrigins();
   renderHubs();
@@ -1545,26 +1545,6 @@ function render() {
   renderTrucks();
   renderZoom();
   requestAnimationFrame(drawConnectors);
-}
-
-function renderSummary() {
-  const total = state.orders.reduce((sum, order) => sum + order.totalQty, 0);
-  const assigned = state.orders.flatMap(order => order.allocations)
-    .filter(allocation => allocation.status === "ASSIGNED")
-    .reduce((sum, allocation) => sum + allocation.qty, 0);
-  const staged = state.orders.flatMap(order => order.allocations)
-    .filter(allocation => allocation.status === "STAGED_IN_HUB")
-    .reduce((sum, allocation) => sum + allocation.qty, 0);
-  const inTruck = state.orders.flatMap(order => order.allocations)
-    .filter(allocation => allocation.status === "IN_TRUCK")
-    .reduce((sum, allocation) => sum + allocation.qty, 0);
-
-  els.summaryStrip.innerHTML = [
-    ["T/O ทั้งหมด", `${total.toLocaleString()} แพ็ก`],
-    ["ในรถ", `${inTruck.toLocaleString()} แพ็ก`],
-    ["พักที่ HUB", `${staged.toLocaleString()} แพ็ก`],
-    ["ส่งปลายทาง", `${assigned.toLocaleString()} แพ็ก`]
-  ].map(([label, value]) => `<div class="metric"><span>${label}</span><b>${value}</b></div>`).join("");
 }
 
 function renderSelectedTOs() {
@@ -2111,8 +2091,11 @@ function addRouteStopReorderHandlers(routes, truck) {
 }
 
 function addRouteSplitDropHandlers(routes, truck) {
+  const hasSingleSplitSource = () => !dragged?.dropSelections ||
+    new Set(dragged.dropSelections.map(selection => selection.fromStopId)).size <= 1;
+
   routes.addEventListener("dragover", event => {
-    if (!dragged?.routeSplit) return;
+    if (!dragged?.routeSplit || !hasSingleSplitSource()) return;
     const plan = routeSplitPlan(truck, dragged.allocationIds || [dragged.allocationId], dragged.fromRouteStopId, event.target.closest("[data-stop-id]")?.dataset.stopId);
     if (!plan) return;
     event.preventDefault();
@@ -2122,7 +2105,7 @@ function addRouteSplitDropHandlers(routes, truck) {
     if (!routes.contains(event.relatedTarget)) routes.classList.remove("is-route-split-over");
   });
   routes.addEventListener("drop", event => {
-    if (!dragged?.routeSplit) return;
+    if (!dragged?.routeSplit || !hasSingleSplitSource()) return;
     const plan = routeSplitPlan(truck, dragged.allocationIds || [dragged.allocationId], dragged.fromRouteStopId, event.target.closest("[data-stop-id]")?.dataset.stopId);
     if (!plan) return;
     event.preventDefault();
@@ -2173,8 +2156,11 @@ function addRouteStopDragHandlers(card, truck, stop) {
 }
 
 function addPickupMergeHandlers(card, truck, stop) {
+  const hasSingleMergeSource = () => !dragged?.dropSelections ||
+    new Set(dragged.dropSelections.map(selection => selection.fromStopId)).size <= 1;
+
   card.addEventListener("dragover", event => {
-    if (!dragged?.routeSplit || dragged.fromRouteStopId === stop.id) return;
+    if (!dragged?.routeSplit || !hasSingleMergeSource() || dragged.fromRouteStopId === stop.id) return;
     const fromStop = stopById(truck, dragged.fromRouteStopId);
     if (!fromStop || fromStop.location !== stop.location || fromStop.type !== stop.type) return;
     event.preventDefault();
@@ -2182,7 +2168,7 @@ function addPickupMergeHandlers(card, truck, stop) {
   });
   card.addEventListener("dragleave", () => card.classList.remove("is-merge-over"));
   card.addEventListener("drop", event => {
-    if (!dragged?.routeSplit || dragged.fromRouteStopId === stop.id) return;
+    if (!dragged?.routeSplit || !hasSingleMergeSource() || dragged.fromRouteStopId === stop.id) return;
     const allocationIds = dragged.allocationIds || [dragged.allocationId];
     const fromStop = stopById(truck, dragged.fromRouteStopId);
     if (!fromStop || fromStop.location !== stop.location || fromStop.type !== stop.type) return;
@@ -2209,6 +2195,7 @@ function addHubDropHandlers(zone, hubId) {
     openDropTransferQuantityModal({
       title: `ลงสินค้าเข้า ${hub.name}`,
       allocationIds: dragged.allocationIds || [dragged.allocationId],
+      dropSelections: dragged.dropSelections || null,
       fromStopId: dragged.fromRouteStopId,
       transferLocation: hub.name,
       transferFields: {
@@ -2248,6 +2235,7 @@ function addOriginTransferDropHandlers(tab, origin) {
       openDropTransferQuantityModal({
         title: `ลงสินค้าเข้า ${origin}`,
         allocationIds: dragged.allocationIds || [dragged.allocationId],
+        dropSelections: dragged.dropSelections || null,
         fromStopId: dragged.fromRouteStopId,
         transferLocation: origin,
         transferFields: {
@@ -2363,15 +2351,27 @@ function splitDropAllocationForTransfer(found, qty, transferFields) {
   return transferAllocation.id;
 }
 
-function moveDropAllocationQuantitiesToTransfer({ allocationIds, qtyById, fromStopId, transferLocation, transferFields }) {
-  const ids = [...new Set((Array.isArray(allocationIds) ? allocationIds : [allocationIds]).filter(Boolean))];
-  const foundItems = ids.map(allocationById).filter(Boolean);
-  if (!transferLocation || !ids.length || !foundItems.length) return false;
+function moveDropAllocationQuantitiesToTransfer({ allocationIds, dropSelections, qtyById, fromStopId, transferLocation, transferFields }) {
+  const selections = (dropSelections?.length ? dropSelections : (allocationIds || []).map(allocationId => ({ allocationId, fromStopId })))
+    .filter(selection => selection?.allocationId && selection?.fromStopId);
+  const uniqueSelections = [...new Map(selections.map(selection => [
+    `${selection.fromStopId}:${selection.allocationId}`,
+    selection
+  ])).values()];
+  const foundItems = uniqueSelections.map(selection => {
+    const found = allocationById(selection.allocationId);
+    return found ? { ...found, fromStopId: selection.fromStopId } : null;
+  }).filter(Boolean);
+  if (!transferLocation || !uniqueSelections.length || !foundItems.length) return false;
   const truck = truckById(foundItems[0].allocation.truckId);
-  const fromStop = stopById(truck, fromStopId);
-  if (!truck || !fromStop || fromStop.type !== "DROP") return false;
+  if (!truck) return false;
+  if (foundItems.some(item => item.allocation.truckId !== truck.id)) return false;
+  const involvedStops = [...new Set(foundItems.map(item => item.fromStopId))]
+    .map(stopId => stopById(truck, stopId))
+    .filter(Boolean);
+  if (!involvedStops.length || involvedStops.some(stop => stop.type !== "DROP")) return false;
 
-  const fromIndex = truck.routeStops.findIndex(stop => stop.id === fromStopId);
+  const fromIndex = Math.min(...involvedStops.map(stop => truck.routeStops.findIndex(routeStop => routeStop.id === stop.id)).filter(index => index >= 0));
   let inbound = truck.routeStops.find(stop => stop.type === "INBOUND" && stop.location === transferLocation);
   if (!inbound) {
     inbound = createRouteStop("INBOUND", transferLocation);
@@ -2379,6 +2379,8 @@ function moveDropAllocationQuantitiesToTransfer({ allocationIds, qtyById, fromSt
   }
 
   foundItems.forEach(found => {
+    const fromStop = stopById(truck, found.fromStopId);
+    if (!fromStop || !fromStop.allocationIds.includes(found.allocation.id)) return;
     const qty = Math.min(qtyById.get(found.allocation.id) || 0, found.allocation.qty);
     if (qty <= 0) return;
     const isFullMove = qty >= found.allocation.qty;
@@ -2395,12 +2397,20 @@ function moveDropAllocationQuantitiesToTransfer({ allocationIds, qtyById, fromSt
   return true;
 }
 
-function openDropTransferQuantityModal({ title, allocationIds, fromStopId, transferLocation, transferFields }) {
-  const items = [...new Set(allocationIds)]
-    .map(allocationId => {
+function openDropTransferQuantityModal({ title, allocationIds, dropSelections, fromStopId, transferLocation, transferFields }) {
+  const selections = (dropSelections?.length ? dropSelections : (allocationIds || []).map(allocationId => ({ allocationId, fromStopId })))
+    .filter(selection => selection?.allocationId && selection?.fromStopId);
+  const uniqueSelections = [...new Map(selections.map(selection => [
+    `${selection.fromStopId}:${selection.allocationId}`,
+    selection
+  ])).values()];
+  const items = uniqueSelections
+    .map(selection => {
+      const { allocationId } = selection;
       const found = allocationById(allocationId);
       return found ? {
         id: allocationId,
+        fromStopId: selection.fromStopId,
         max: found.allocation.qty,
         summary: allocationMoveSummary(found.order, found.allocation, `ไป: ${transferLocation}`)
       } : null;
@@ -2411,6 +2421,7 @@ function openDropTransferQuantityModal({ title, allocationIds, fromStopId, trans
     items,
     onConfirm: qtyById => moveDropAllocationQuantitiesToTransfer({
       allocationIds: items.map(item => item.id),
+      dropSelections: items.map(item => ({ allocationId: item.id, fromStopId: item.fromStopId })),
       qtyById,
       fromStopId,
       transferLocation,
@@ -3052,9 +3063,11 @@ function allocationLine(allocation, options = {}) {
         selectedRouteDrops.delete(dropSelectionKey);
       } else {
         clearActionSelections("route-drop");
-        const hasOtherStopSelection = [...selectedRouteDrops]
-          .some(key => parseRouteDropKey(key).fromStopId !== options.dropStopId);
-        if (hasOtherStopSelection) clearRouteDropSelection();
+        const currentTruckId = options.dropTruckId || truckByStopId(options.dropStopId)?.id || null;
+        const hasOtherTruckSelection = [...selectedRouteDrops]
+          .map(parseRouteDropKey)
+          .some(selection => (truckByStopId(selection.fromStopId)?.id || null) !== currentTruckId);
+        if (hasOtherTruckSelection) clearRouteDropSelection();
         selectedRouteDrops.add(dropSelectionKey);
       }
       render();
@@ -3064,10 +3077,12 @@ function allocationLine(allocation, options = {}) {
         clearActionSelections("route-drop");
         selectedRouteDrops.add(dropSelectionKey);
       }
-      const allocationIds = selectedDropIdsForStop(options.dropStopId, allocation.id);
+      const dropSelections = selectedDropSelectionsForDrag(options.dropStopId, allocation.id);
+      const allocationIds = dropSelections.map(selection => selection.allocationId);
       dragged = {
         allocationId: allocation.id,
         allocationIds,
+        dropSelections,
         fromRouteStopId: options.dropStopId,
         fromTruckId: options.dropTruckId || null,
         routeSplit: true,

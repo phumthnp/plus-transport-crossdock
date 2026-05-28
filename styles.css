@@ -113,31 +113,6 @@ button:hover {
   font-weight: 700;
 }
 
-.summary-strip {
-  display: flex;
-  gap: 10px;
-}
-
-.metric {
-  min-width: 112px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--surface-muted);
-}
-
-.metric span {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.metric b {
-  display: block;
-  margin-top: 3px;
-  font-size: 16px;
-}
-
 .board {
   display: grid;
   grid-template-columns: 560px minmax(760px, 1fr);
@@ -617,7 +592,6 @@ button:hover {
 .hub-card.is-route-highlight,
 .same-truck-card.is-route-highlight {
   border-color: #d95d5d;
-  background-color: #fff0f0;
   box-shadow: 0 0 0 3px rgba(217, 93, 93, .26);
 }
 
@@ -1358,7 +1332,7 @@ button:hover {
   padding: 8px 9px;
   border: 1px solid var(--strong-line);
   border-radius: 3px;
-  background: rgba(255, 255, 255, .72);
+  background: #fff;
 }
 
 .allocation-line.is-muted {
